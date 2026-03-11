@@ -1,5 +1,7 @@
 package speech
 
+import "voicebot/pkg/stream"
+
 // Config 调度器配置
 type Config struct {
 	// 队列配置
@@ -15,6 +17,9 @@ type Config struct {
 
 	// Stream 配置
 	MaxStreamSize int // 单个流最大缓冲 (default: 1MB)
+
+	// 过滤器
+	Filters []stream.Filter // 输入端过滤器（Push 时执行）
 }
 
 // DefaultConfig 默认配置

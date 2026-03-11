@@ -12,7 +12,6 @@ import (
 type TTSController struct {
 	provider tts.Engine
 	session  tts.Session
-	stream   *stream.TtsStream
 	mu       sync.Mutex
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -29,65 +28,29 @@ func NewTTSController(provider tts.Engine) *TTSController {
 }
 
 // Synthesize 合成语音
-func (c *TTSController) Synthesize(ctx context.Context, text string, maxSize int) (*stream.TtsStream, error) {
+func (c *TTSController) Synthesize(ctx context.Context, text string, filters ...stream.Filter) (stream.Stream, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 创建 session
-	session, err := c.provider.NewSession(ctx)
+	// 创建 stream 并配置过滤器
+	audioStream := stream.NewAudioStream(0)
+	audioStream.PushFilter(filters...)
+
+	// 创建 session，注入 stream
+	session, err := c.provider.NewSession(ctx, audioStream)
 	if err != nil {
 		return nil, err
 	}
 	c.session = session
 
-	// 创建 stream
-	strm := stream.NewTtsStream(maxSize)
-	c.stream = strm
-
 	// 发送文本
 	if err := session.SendText(text, nil); err != nil {
+		session.Close()
+		c.session = nil
 		return nil, err
 	}
 
-	// 启动 pump 协程
-	go c.pumpAudio(ctx, session, strm)
-
-	return strm, nil
-}
-
-// pumpAudio 从 session 读取音频并写入 stream
-func (c *TTSController) pumpAudio(ctx context.Context, sess tts.Session, strm *stream.TtsStream) {
-	defer func() {
-		strm.Push(nil, true) // EOF
-		c.mu.Lock()
-		c.session = nil
-		c.stream = nil
-		c.mu.Unlock()
-	}()
-
-	audioStream := sess.RecvAudio()
-	defer audioStream.Close()
-
-	for audioStream.Next() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.ctx.Done():
-			return
-		default:
-			frame := audioStream.Frame()
-			if len(frame.Data) > 0 {
-				_ = strm.Push(frame.Data, frame.Final)
-			}
-			if frame.Final {
-				return
-			}
-		}
-	}
-
-	if audioStream.Error() != nil {
-		// todo log session error
-	}
+	return audioStream, nil
 }
 
 // Cancel 取消当前合成
@@ -95,10 +58,9 @@ func (c *TTSController) Cancel() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.session = nil
-	if c.stream != nil {
-		c.stream.Push(nil, true)
-		c.stream = nil
+	if c.session != nil {
+		c.session.Close()
+		c.session = nil
 	}
 }
 

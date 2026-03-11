@@ -1,8 +1,10 @@
-package stream
+package player
 
 import (
 	"fmt"
 	"time"
+
+	"voicebot/pkg/stream"
 )
 
 // ============ Player 使用示例 ============
@@ -19,26 +21,26 @@ func ExamplePlayer_Basic() {
 	// 启动播放器（后台运行）
 	go player.Run()
 
-	// 创建并添加音频流
-	stream := NewTtsStream(64 * 1024)
-	stream.Use(
-		NewLoggerProcessor("tts"),
-		NewSimpleResamplerProcessor(48000, 16000),
-		NewSimpleVolumeProcessor(0.8),
+	// 创建并配置音频流
+	audioStream := stream.NewAudioStream(64 * 1024)
+	audioStream.PushFilter(
+		stream.NewLogFilter("tts"),
+		stream.NewResampleFilter(48000, 16000),
+		stream.NewVolumeFilter(0.8),
 	)
 
 	// 推送数据
 	go func() {
 		for i := 0; i < 10; i++ {
 			data := make([]byte, 3200) // 100ms @ 16kHz
-			stream.Push(data, false)
+			audioStream.Push(data, false)
 			time.Sleep(100 * time.Millisecond)
 		}
-		stream.Push(nil, true) // EOF
+		audioStream.Push(nil, true) // EOF
 	}()
 
 	// 开始播放
-	player.Start(stream)
+	player.Start(audioStream)
 
 	// 等待播放完成
 	time.Sleep(2 * time.Second)
@@ -54,20 +56,20 @@ func ExamplePlayer_Queue() {
 
 	// 创建多个流（排队播放）
 	for i := 1; i <= 3; i++ {
-		stream := NewTtsStream(64 * 1024)
-		stream.Use(NewLoggerProcessor(fmt.Sprintf("stream%d", i)))
+		audioStream := stream.NewAudioStream(64 * 1024)
+		audioStream.PushFilter(stream.NewLogFilter(fmt.Sprintf("stream%d", i)))
 
 		// 推送数据
-		go func(idx int, s *TtsStream) {
+		go func(idx int, s *stream.AudioStream) {
 			for j := 0; j < 5; j++ {
 				s.Push(make([]byte, 3200), false)
 				time.Sleep(100 * time.Millisecond)
 			}
 			s.Push(nil, true)
-		}(i, stream)
+		}(i, audioStream)
 
 		// 添加到队列（会排队播放）
-		player.Start(stream)
+		player.Start(audioStream)
 		fmt.Printf("[Main] Added stream %d to queue (queue length: %d)\n",
 			i, player.QueueLength())
 	}
@@ -86,19 +88,19 @@ func ExamplePlayer_Control() {
 	player, _ := NewPlayer(16000, 1)
 	go player.Run()
 
-	stream := NewTtsStream(64 * 1024)
-	stream.Use(NewSimpleResamplerProcessor(48000, 16000))
+	audioStream := stream.NewAudioStream(64 * 1024)
+	audioStream.PushFilter(stream.NewResampleFilter(48000, 16000))
 
 	// 推送较长的数据
 	go func() {
 		for i := 0; i < 50; i++ {
-			stream.Push(make([]byte, 3200), false)
+			audioStream.Push(make([]byte, 3200), false)
 			time.Sleep(100 * time.Millisecond)
 		}
-		stream.Push(nil, true)
+		audioStream.Push(nil, true)
 	}()
 
-	player.Start(stream)
+	player.Start(audioStream)
 
 	// 演示播放控制
 	time.Sleep(1 * time.Second)
@@ -130,15 +132,15 @@ func ExamplePlayer_TTSScenario() {
 
 	for _, text := range ttsStreams {
 		// 创建 TTS 流（48kHz → 16kHz）
-		stream := NewTtsStream(64 * 1024)
+		audioStream := stream.NewAudioStream(64 * 1024)
 
-		stream.Use(
-			NewSimpleResamplerProcessor(48000, 16000),
-			NewSimpleVolumeProcessor(0.9),
+		audioStream.PushFilter(
+			stream.NewResampleFilter(48000, 16000),
+			stream.NewVolumeFilter(0.9),
 		)
 
 		// 创建可播放流并设置命令回调（AOP）
-		playable := NewPlayable(stream)
+		playable := NewPlayable(audioStream)
 		playable.OnPlay(func() {
 			fmt.Printf("[Stream:%s] Started playing\n", text)
 		})
@@ -153,7 +155,7 @@ func ExamplePlayer_TTSScenario() {
 		})
 
 		// 模拟 TTS 生成数据
-		go func(s *TtsStream, txt string) {
+		go func(s *stream.AudioStream, txt string) {
 			fmt.Printf("[TTS] Generating: %s\n", txt)
 			for i := 0; i < 10; i++ {
 				data := make([]byte, 9600) // 100ms @ 48kHz
@@ -162,7 +164,7 @@ func ExamplePlayer_TTSScenario() {
 			}
 			s.Push(nil, true)
 			fmt.Printf("[TTS] Finished: %s\n", txt)
-		}(stream, text)
+		}(audioStream, text)
 
 		// 添加到播放队列
 		player.StartPlayable(playable)
@@ -186,16 +188,16 @@ func ExamplePlayer_RealtimeControl() {
 	player, _ := NewPlayer(16000, 1)
 	go player.Run()
 
-	stream := NewTtsStream(64 * 1024)
+	audioStream := stream.NewAudioStream(64 * 1024)
 	go func() {
 		for i := 0; i < 100; i++ {
-			stream.Push(make([]byte, 3200), false)
+			audioStream.Push(make([]byte, 3200), false)
 			time.Sleep(100 * time.Millisecond)
 		}
-		stream.Push(nil, true)
+		audioStream.Push(nil, true)
 	}()
 
-	player.Start(stream)
+	player.Start(audioStream)
 
 	// 模拟用户交互
 	commands := []struct {

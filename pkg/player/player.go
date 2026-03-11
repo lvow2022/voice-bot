@@ -1,4 +1,4 @@
-package stream
+package player
 
 import (
 	"fmt"
@@ -6,21 +6,22 @@ import (
 	"time"
 
 	"github.com/gen2brain/malgo"
+	"voicebot/pkg/stream"
 )
 
 // ============ Player 状态 ============
 
-// PlayerState 播放器状态
-type PlayerState int
+// State 播放器状态
+type State int
 
 const (
-	StateIdle    PlayerState = iota // 空闲
-	StatePlaying                    // 播放中
-	StatePaused                     // 暂停
-	StateError                      // 错误
+	StateIdle    State = iota // 空闲
+	StatePlaying              // 播放中
+	StatePaused               // 暂停
+	StateError                // 错误
 )
 
-func (s PlayerState) String() string {
+func (s State) String() string {
 	switch s {
 	case StateIdle:
 		return "idle"
@@ -35,110 +36,105 @@ func (s PlayerState) String() string {
 	}
 }
 
-// ============ PlayableStream（对 Streamer 的状态封装）============
+// ============ PlayablePipe（对 Stream 的状态封装）============
 
-// StreamState 流状态
-type StreamState int
+// PipeState 管道状态
+type PipeState int
 
 const (
-	StreamStatePlaying StreamState = iota // 播放中
-	StreamStatePaused                     // 暂停
-	StreamStateStopped                    // 停止
+	PipeStatePlaying PipeState = iota // 播放中
+	PipeStatePaused                   // 暂停
+	PipeStateStopped                  // 停止
 )
 
-func (s StreamState) String() string {
+func (s PipeState) String() string {
 	switch s {
-	case StreamStatePlaying:
+	case PipeStatePlaying:
 		return "playing"
-	case StreamStatePaused:
+	case PipeStatePaused:
 		return "paused"
-	case StreamStateStopped:
+	case PipeStateStopped:
 		return "stopped"
 	default:
 		return "unknown"
 	}
 }
 
-// PlayableStream 对 Streamer 进行状态封装
-type PlayableStream struct {
-	stream          Streamer    // 原始流
-	state           StreamState // 流状态
-	onPlayCallback  func()      // 开始播放回调
-	onPauseCallback func()      // 暂停回调
-	onResumeCallback func()     // 恢复回调
-	onStopCallback   func()     // 停止回调
-	mu              sync.RWMutex
+// PlayablePipe 对 Stream 进行状态封装
+type PlayablePipe struct {
+	pipe             stream.Stream // 原始管道
+	state            PipeState     // 管道状态
+	onPlayCallback   func()        // 开始播放回调
+	onPauseCallback  func()        // 暂停回调
+	onResumeCallback func()        // 恢复回调
+	onStopCallback   func()        // 停止回调
+	mu               sync.RWMutex
 }
 
-// newPlayableStream 创建可播放流
-func newPlayableStream(stream Streamer) *PlayableStream {
-	return &PlayableStream{
-		stream: stream,
-		state:  StreamStatePlaying,
+// newPlayablePipe 创建可播放管道
+func newPlayablePipe(pipe stream.Stream) *PlayablePipe {
+	return &PlayablePipe{
+		pipe:  pipe,
+		state: PipeStatePlaying,
 	}
 }
 
-// NewPlayable 创建可播放流（导出版本，允许设置回调）
-func NewPlayable(stream Streamer) *PlayableStream {
-	return newPlayableStream(stream)
+// NewPlayable 创建可播放管道（导出版本，允许设置回调）
+func NewPlayable(pipe stream.Stream) *PlayablePipe {
+	return newPlayablePipe(pipe)
 }
 
 // OnPlay 设置开始播放回调
-func (s *PlayableStream) OnPlay(callback func()) {
+func (s *PlayablePipe) OnPlay(callback func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onPlayCallback = callback
 }
 
 // OnPause 设置暂停回调
-func (s *PlayableStream) OnPause(callback func()) {
+func (s *PlayablePipe) OnPause(callback func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onPauseCallback = callback
 }
 
 // OnResume 设置恢复回调
-func (s *PlayableStream) OnResume(callback func()) {
+func (s *PlayablePipe) OnResume(callback func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onResumeCallback = callback
 }
 
 // OnStop 设置停止回调
-func (s *PlayableStream) OnStop(callback func()) {
+func (s *PlayablePipe) OnStop(callback func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onStopCallback = callback
 }
 
-// Pull 实现 Streamer 接口，根据状态决定行为
-func (s *PlayableStream) Pull(buf []byte) (int, error) {
+// Pull 实现 Stream 接口，根据状态决定行为
+func (s *PlayablePipe) Pull(buf []byte) (int, error) {
 	s.mu.RLock()
 	state := s.state
 	s.mu.RUnlock()
 
 	switch state {
-	case StreamStatePaused:
+	case PipeStatePaused:
 		return 0, nil // 暂停：返回静音（0 字节）
-	case StreamStateStopped:
-		return 0, ErrStreamEnded // 停止：返回结束
+	case PipeStateStopped:
+		return 0, stream.ErrStreamEnded // 停止：返回结束
 	default:
-		return s.stream.Pull(buf) // 播放：正常读取
+		return s.pipe.Pull(buf) // 播放：正常读取
 	}
 }
 
-// Push 实现 Streamer 接口
-func (s *PlayableStream) Push(data []byte, eof bool) error {
-	return s.stream.Push(data, eof)
-}
-
-// Meta 实现 Streamer 接口
-func (s *PlayableStream) Meta() StreamMeta {
-	return s.stream.Meta()
+// Push 实现 Stream 接口
+func (s *PlayablePipe) Push(data []byte, eof bool) error {
+	return s.pipe.Push(data, eof)
 }
 
 // Play 开始播放（触发 onPlay 回调）
-func (s *PlayableStream) Play() {
+func (s *PlayablePipe) Play() {
 	s.mu.RLock()
 	callback := s.onPlayCallback
 	s.mu.RUnlock()
@@ -148,10 +144,10 @@ func (s *PlayableStream) Play() {
 	}
 }
 
-// Pause 暂停流
-func (s *PlayableStream) Pause() {
+// Pause 暂停管道
+func (s *PlayablePipe) Pause() {
 	s.mu.Lock()
-	s.state = StreamStatePaused
+	s.state = PipeStatePaused
 	callback := s.onPauseCallback
 	s.mu.Unlock()
 
@@ -160,10 +156,10 @@ func (s *PlayableStream) Pause() {
 	}
 }
 
-// Resume 恢复流
-func (s *PlayableStream) Resume() {
+// Resume 恢复管道
+func (s *PlayablePipe) Resume() {
 	s.mu.Lock()
-	s.state = StreamStatePlaying
+	s.state = PipeStatePlaying
 	callback := s.onResumeCallback
 	s.mu.Unlock()
 
@@ -172,10 +168,10 @@ func (s *PlayableStream) Resume() {
 	}
 }
 
-// Stop 停止流
-func (s *PlayableStream) Stop() {
+// Stop 停止管道
+func (s *PlayablePipe) Stop() {
 	s.mu.Lock()
-	s.state = StreamStateStopped
+	s.state = PipeStateStopped
 	callback := s.onStopCallback
 	s.mu.Unlock()
 
@@ -184,8 +180,8 @@ func (s *PlayableStream) Stop() {
 	}
 }
 
-// State 获取流状态
-func (s *PlayableStream) State() StreamState {
+// State 获取管道状态
+func (s *PlayablePipe) State() PipeState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.state
@@ -196,7 +192,7 @@ func (s *PlayableStream) State() StreamState {
 // Player 音频播放器
 type Player struct {
 	// ============ 输入 ============
-	queue chan *PlayableStream
+	queue chan *PlayablePipe
 
 	// ============ malgo（只初始化一次）============
 	ctx        *malgo.AllocatedContext
@@ -212,8 +208,8 @@ type Player struct {
 	bufMu   sync.RWMutex
 
 	// ============ 当前流管理 ============
-	currentStream *PlayableStream
-	currentMu     sync.RWMutex
+	currentPipe *PlayablePipe
+	currentMu   sync.RWMutex
 
 	// ============ 生命周期 ============
 	done           chan struct{}
@@ -232,7 +228,7 @@ func NewPlayer(sampleRate, channels int) (*Player, error) {
 	frameSize := sampleRate * channels * 2 / 50 // 20ms @ 16-bit
 
 	return &Player{
-		queue:      make(chan *PlayableStream, 10),
+		queue:      make(chan *PlayablePipe, 10),
 		ctx:        ctx,
 		sampleRate: sampleRate,
 		channels:   channels,
@@ -331,7 +327,7 @@ func (p *Player) initDevice() error {
 }
 
 // playStream 播放单个流
-func (p *Player) playStream(playable *PlayableStream) {
+func (p *Player) playStream(playable *PlayablePipe) {
 	// 设置当前流
 	p.setCurrentStream(playable)
 	defer p.clearCurrentStream()
@@ -349,7 +345,7 @@ func (p *Player) playStream(playable *PlayableStream) {
 			playable.Stop()
 			return
 		case <-ticker.C:
-			if playable.State() == StreamStateStopped {
+			if playable.State() == PipeStateStopped {
 				return
 			}
 			if err := p.feedStream(playable); err != nil {
@@ -360,27 +356,27 @@ func (p *Player) playStream(playable *PlayableStream) {
 }
 
 // setCurrentStream 设置当前播放流
-func (p *Player) setCurrentStream(playable *PlayableStream) {
+func (p *Player) setCurrentStream(playable *PlayablePipe) {
 	p.currentMu.Lock()
-	p.currentStream = playable
+	p.currentPipe = playable
 	p.currentMu.Unlock()
 }
 
 // clearCurrentStream 清除当前播放流
 func (p *Player) clearCurrentStream() {
 	p.currentMu.Lock()
-	p.currentStream = nil
+	p.currentPipe = nil
 	p.currentMu.Unlock()
 }
 
 // feedStream 从流拉取数据到缓冲区
-func (p *Player) feedStream(playable *PlayableStream) error {
+func (p *Player) feedStream(playable *PlayablePipe) error {
 	p.bufMu.Lock()
 	n, err := playable.Pull(p.buffer)
 	p.bufSize = n
 	p.bufMu.Unlock()
 
-	if err == ErrStreamEnded {
+	if err == stream.ErrStreamEnded {
 		return err
 	}
 	if err != nil {
@@ -395,10 +391,10 @@ func (p *Player) newDataSent() func(pOutputSamples, pInputSamples []byte, framec
 	return func(pOutputSamples, pInputSamples []byte, framecount uint32) {
 		// 检查当前流状态
 		p.currentMu.RLock()
-		stream := p.currentStream
+		stream := p.currentPipe
 		p.currentMu.RUnlock()
 
-		isPaused := stream != nil && stream.State() == StreamStatePaused
+		isPaused := stream != nil && stream.State() == PipeStatePaused
 
 		p.bufMu.RLock()
 		defer p.bufMu.RUnlock()
@@ -426,8 +422,8 @@ func (p *Player) newDataSent() func(pOutputSamples, pInputSamples []byte, framec
 }
 
 // Start 添加流到播放队列
-func (p *Player) Start(streamer Streamer) {
-	playable := newPlayableStream(streamer)
+func (p *Player) Start(streamer stream.Stream) {
+	playable := newPlayablePipe(streamer)
 	select {
 	case p.queue <- playable:
 		fmt.Println("[Player] Stream added to queue")
@@ -437,7 +433,7 @@ func (p *Player) Start(streamer Streamer) {
 }
 
 // StartPlayable 添加已配置的可播放流到队列（用于设置回调）
-func (p *Player) StartPlayable(playable *PlayableStream) {
+func (p *Player) StartPlayable(playable *PlayablePipe) {
 	select {
 	case p.queue <- playable:
 		fmt.Println("[Player] Playable stream added to queue")
@@ -449,7 +445,7 @@ func (p *Player) StartPlayable(playable *PlayableStream) {
 // Pause 暂停播放
 func (p *Player) Pause() {
 	p.currentMu.RLock()
-	stream := p.currentStream
+	stream := p.currentPipe
 	p.currentMu.RUnlock()
 	if stream != nil {
 		stream.Pause()
@@ -459,7 +455,7 @@ func (p *Player) Pause() {
 // Resume 恢复播放
 func (p *Player) Resume() {
 	p.currentMu.RLock()
-	stream := p.currentStream
+	stream := p.currentPipe
 	p.currentMu.RUnlock()
 	if stream != nil {
 		stream.Resume()
@@ -469,7 +465,7 @@ func (p *Player) Resume() {
 // Stop 停止当前播放的流，继续播放队列中的下一个
 func (p *Player) Stop() {
 	p.currentMu.RLock()
-	stream := p.currentStream
+	stream := p.currentPipe
 	p.currentMu.RUnlock()
 	if stream != nil {
 		stream.Stop()
@@ -510,26 +506,26 @@ func (p *Player) Shutdown() {
 // Next 跳过当前，播放下一个
 func (p *Player) Next() {
 	p.currentMu.RLock()
-	stream := p.currentStream
+	stream := p.currentPipe
 	p.currentMu.RUnlock()
 	if stream != nil {
 		stream.Stop()
 	}
 }
 
-// State 获取当前状态（派生自 currentStream.State()）
-func (p *Player) State() PlayerState {
+// State 获取当前状态（派生自 currentPipe.State()）
+func (p *Player) State() State {
 	p.currentMu.RLock()
-	stream := p.currentStream
+	stream := p.currentPipe
 	p.currentMu.RUnlock()
 
 	if stream == nil {
 		return StateIdle
 	}
 	switch stream.State() {
-	case StreamStatePlaying:
+	case PipeStatePlaying:
 		return StatePlaying
-	case StreamStatePaused:
+	case PipeStatePaused:
 		return StatePaused
 	default:
 		return StateIdle
@@ -576,11 +572,11 @@ done:
 }
 
 // CurrentStream 获取当前播放的流
-func (p *Player) CurrentStream() Streamer {
+func (p *Player) CurrentStream() stream.Stream {
 	p.currentMu.RLock()
 	defer p.currentMu.RUnlock()
-	if p.currentStream != nil {
-		return p.currentStream.stream
+	if p.currentPipe != nil {
+		return p.currentPipe.pipe
 	}
 	return nil
 }

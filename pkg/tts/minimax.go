@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 
+	"voicebot/pkg/stream"
 	ws "voicebot/pkg/websocket"
 )
 
@@ -70,7 +70,7 @@ type MinimaxTaskContinueRequest struct {
 	Text  string `json:"text"`
 }
 
-// MinimaxOption provider 配置选项
+// MinimaxOption 配置选项
 type MinimaxOption struct {
 	Model         string
 	APIKey        string
@@ -93,9 +93,9 @@ type MinimaxEngine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu         sync.Mutex
-	activeSess *MinimaxSession // 当前活跃的 session
-	closeOnce  sync.Once
+	mu          sync.Mutex
+	currentSess *MinimaxSession
+	closeOnce   sync.Once
 }
 
 func NewMinimaxEngine(cfg EngineConfig) (Engine, error) {
@@ -122,33 +122,34 @@ func NewMinimaxEngine(cfg EngineConfig) (Engine, error) {
 		return nil, fmt.Errorf("connect websocket: %w", err)
 	}
 
-	p := &MinimaxEngine{
+	e := &MinimaxEngine{
 		opt:    opt,
 		conn:   conn,
 		ctx:    ctx,
 		cancel: cancel,
 	}
 
-	if err := p.startTask(); err != nil {
+	if err := e.startTask(); err != nil {
 		_ = conn.Close()
 		cancel()
 		return nil, fmt.Errorf("start task: %w", err)
 	}
 
-	return p, nil
+	// 启动接收循环
+	go e.recvLoop()
+
+	return e, nil
 }
 
 func parseMinimaxOption(cfg EngineConfig) MinimaxOption {
 	opts := cfg.Options
 
 	opt := MinimaxOption{
-		// 优先使用顶层配置字段
-		APIKey:     cfg.APIKey,
-		VoiceID:    cfg.VoiceID,
-		Model:      cfg.Model,
-		SpeedRatio: cfg.Speed,
-		SampleRate: cfg.SampleRate,
-		// Minimax 特有配置从 Options 获取
+		APIKey:        cfg.APIKey,
+		VoiceID:       cfg.VoiceID,
+		Model:         cfg.Model,
+		SpeedRatio:    cfg.Speed,
+		SampleRate:    cfg.SampleRate,
 		Emotion:       getString(opts, "emotion"),
 		LanguageBoost: getString(opts, "languageBoost"),
 		Format:        getString(opts, "format"),
@@ -157,7 +158,6 @@ func parseMinimaxOption(cfg EngineConfig) MinimaxOption {
 		Channels:      getInt(opts, "channels"),
 	}
 
-	// 默认值
 	opt.Model = firstNonEmpty(opt.Model, MinimaxSpeech25TurboPreview)
 	opt.Format = firstNonEmpty(opt.Format, "pcm")
 	if opt.SampleRate == 0 {
@@ -216,156 +216,145 @@ func firstNonEmpty[T comparable](vals ...T) T {
 	return zero
 }
 
-func (p *MinimaxEngine) startTask() error {
+func (e *MinimaxEngine) startTask() error {
 	req := MinimaxTaskStartRequest{
 		Event:         MinimaxEventTaskStart,
-		Model:         p.opt.Model,
-		LanguageBoost: p.opt.LanguageBoost,
+		Model:         e.opt.Model,
+		LanguageBoost: e.opt.LanguageBoost,
 	}
 
-	req.VoiceSetting.VoiceID = p.opt.VoiceID
-	req.VoiceSetting.Speed = p.opt.SpeedRatio
-	req.VoiceSetting.Volume = p.opt.Volume
-	req.VoiceSetting.Pitch = p.opt.Pitch
-	req.VoiceSetting.Emotion = p.opt.Emotion
+	req.VoiceSetting.VoiceID = e.opt.VoiceID
+	req.VoiceSetting.Speed = e.opt.SpeedRatio
+	req.VoiceSetting.Volume = e.opt.Volume
+	req.VoiceSetting.Pitch = e.opt.Pitch
+	req.VoiceSetting.Emotion = e.opt.Emotion
 
-	req.AudioSetting.SampleRate = p.opt.SampleRate
-	req.AudioSetting.Format = p.opt.Format
-	req.AudioSetting.Channel = p.opt.Channels
+	req.AudioSetting.SampleRate = e.opt.SampleRate
+	req.AudioSetting.Format = e.opt.Format
+	req.AudioSetting.Channel = e.opt.Channels
 
-	return p.conn.SendTextJSON(req)
+	return e.conn.SendTextJSON(req)
 }
 
-func (p *MinimaxEngine) NewSession(ctx context.Context) (Session, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// NewSession 创建新 session（同一时间只能有一个）
+func (e *MinimaxEngine) NewSession(ctx context.Context, output stream.Stream) (Session, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	if p.activeSess != nil {
+	if e.currentSess != nil {
 		return nil, errors.New("minimax: session already active")
 	}
 
-	sessCtx, sessCancel := context.WithCancel(ctx)
-
 	sess := &MinimaxSession{
-		provider: p,
-		stream:   newAudioStream(),
-		ctx:      sessCtx,
-		cancel:   sessCancel,
+		engine: e,
+		output: output,
+		done:   make(chan struct{}),
 	}
-	p.activeSess = sess
-
-	go sess.recvLoop()
+	e.currentSess = sess
 
 	return sess, nil
 }
 
-func (p *MinimaxEngine) Close() error {
-	p.closeOnce.Do(func() {
-		p.cancel()
-		if p.conn != nil {
-			_ = p.conn.Close()
+// Close 关闭引擎
+func (e *MinimaxEngine) Close() error {
+	e.closeOnce.Do(func() {
+		e.cancel()
+		if e.conn != nil {
+			_ = e.conn.Close()
 		}
 	})
 	return nil
+}
+
+// recvLoop 接收循环
+func (e *MinimaxEngine) recvLoop() {
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		default:
+			rawMsg, err := e.conn.Recv()
+			if err != nil {
+				return
+			}
+			e.handleMessage(rawMsg)
+		}
+	}
+}
+
+// handleMessage 处理消息
+func (e *MinimaxEngine) handleMessage(rawMsg []byte) {
+	var msg MinimaxMessage
+	if err := json.Unmarshal(rawMsg, &msg); err != nil {
+		return
+	}
+
+	e.mu.Lock()
+	sess := e.currentSess
+	e.mu.Unlock()
+
+	if sess == nil {
+		return
+	}
+
+	switch msg.Event {
+	case MinimaxEventTaskContinued:
+		if msg.Data.Audio != "" {
+			audio, err := hex.DecodeString(msg.Data.Audio)
+			if err != nil {
+				return
+			}
+			if len(audio) > 0 {
+				if pusher, ok := sess.output.(interface{ Push([]byte, bool) error }); ok {
+					pusher.Push(audio, msg.IsFinal)
+				}
+			}
+		}
+
+		if msg.IsFinal {
+			e.finishSession(sess)
+		}
+
+	case MinimaxEventTaskFailed:
+		e.finishSession(sess)
+	}
+}
+
+// finishSession 结束 session
+func (e *MinimaxEngine) finishSession(sess *MinimaxSession) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.currentSess == sess {
+		// 发送 EOF
+		if pusher, ok := sess.output.(interface{ Push([]byte, bool) error }); ok {
+			pusher.Push(nil, true)
+		}
+		close(sess.done)
+		e.currentSess = nil
+	}
 }
 
 // ============ Session ============
 
 type MinimaxSession struct {
-	provider *MinimaxEngine
-	stream   *audioStream
-	ctx      context.Context
-	cancel   context.CancelFunc
+	engine *MinimaxEngine
+	output stream.Stream
+	done   chan struct{}
 }
 
 func (s *MinimaxSession) SendText(text string, _ map[string]any) error {
-	return s.provider.conn.SendTextJSON(MinimaxTaskContinueRequest{
+	return s.engine.conn.SendTextJSON(MinimaxTaskContinueRequest{
 		Event: MinimaxEventTaskContinue,
 		Text:  text,
 	})
 }
 
-func (s *MinimaxSession) RecvAudio() AudioStream {
-	return s.stream
+func (s *MinimaxSession) Done() <-chan struct{} {
+	return s.done
 }
 
-func (s *MinimaxSession) setErr(err error) {
-	s.stream.err = err
-}
-
-func (s *MinimaxSession) recvLoop() {
-	defer func() {
-		s.stream.Close()
-		s.provider.clearSession(s)
-	}()
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-s.provider.ctx.Done():
-			s.setErr(s.provider.ctx.Err())
-			return
-		default:
-			rawMsg, err := s.provider.conn.Recv()
-			if err != nil {
-				s.setErr(err)
-				return
-			}
-
-			if err = s.dispatch(rawMsg); err != nil {
-				if err != io.EOF {
-					s.setErr(err)
-				}
-
-				return
-			}
-		}
-	}
-}
-
-func (s *MinimaxSession) dispatch(rawMsg []byte) error {
-	var msg MinimaxMessage
-	if err := json.Unmarshal(rawMsg, &msg); err != nil {
-		return fmt.Errorf("unmarshal: %w", err)
-	}
-
-	switch msg.Event {
-	case MinimaxEventTaskStarted:
-		// 任务已启动
-
-	case MinimaxEventTaskContinued:
-		if msg.Data.Audio != "" {
-			audio, err := hex.DecodeString(msg.Data.Audio)
-			if err != nil {
-				return fmt.Errorf("decode hex: %w", err)
-			}
-			select {
-			case s.stream.ch <- AudioFrame{Data: audio, Final: msg.IsFinal}:
-				// 发送成功
-			case <-s.ctx.Done():
-				return s.ctx.Err()
-			}
-		}
-
-		if msg.IsFinal {
-			return io.EOF
-		}
-
-	case MinimaxEventTaskFinished:
-		return nil // 正常结束
-
-	case MinimaxEventTaskFailed:
-		return fmt.Errorf("task failed: %s", msg.BaseResp.StatusMsg)
-	}
-
+func (s *MinimaxSession) Close() error {
+	s.engine.finishSession(s)
 	return nil
-}
-
-func (p *MinimaxEngine) clearSession(sess *MinimaxSession) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.activeSess == sess {
-		p.activeSess = nil
-	}
 }
