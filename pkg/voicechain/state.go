@@ -14,7 +14,50 @@ const (
 	StateSessionEnd = "session.end"
 	// StateSessionHangup 会话挂断
 	StateSessionHangup = "session.hangup"
+
+	// Legacy aliases for backward compatibility
+	Begin  = StateSessionBegin
+	End    = StateSessionEnd
+	Hangup = StateSessionHangup
 )
+
+// ========== 音频处理状态 ==========
+
+const (
+	// VAD 事件
+	StartSpeaking = "vad.speaking.start"
+	StartSilence  = "vad.silence.start"
+	Silence       = "vad.silence"
+
+	// 播放事件
+	StartPlay = "play.start"
+	StopPlay  = "play.stop"
+
+	// 打断事件
+	Interruption = "audio.interruption"
+
+	// DTMF 事件
+	DTMF = "dtmf.detected"
+)
+
+// ========== 打断方法 ==========
+
+const (
+	InterruptionMethodDTMF         = "dtmf"
+	InterruptionMethodVAD          = "vad"
+	InterruptionMethodTranscribing = "transcribing"
+	InterruptionChange             = "interruption.change"
+)
+
+// PlayStateData 播放状态数据
+type PlayStateData struct{}
+
+// VadMetric VAD 指标数据
+type VadMetric struct {
+	StartSilenceAt    time.Time `json:"startSilenceAt"`
+	StartSpeakingAt   time.Time `json:"startSpeakingAt"`
+	DialogID          string    `json:"dialogID"`
+}
 
 // ========== Turn 状态 ==========
 

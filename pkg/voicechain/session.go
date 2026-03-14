@@ -375,6 +375,11 @@ func (s *Session) AddMetric(key string, duration time.Duration) {
 	slog.Debug("add metric", "sessionID", s.ID, "key", key, "duration", duration)
 }
 
+// EmitCallMetric 发送通话指标
+func (s *Session) EmitCallMetric(dialogID string, metric any) {
+	slog.Debug("emit call metric", "sessionID", s.ID, "dialogID", dialogID, "metric", metric)
+}
+
 // processData 处理数据
 func (s *Session) processData(data *SessionData) {
 	switch data.Type {
