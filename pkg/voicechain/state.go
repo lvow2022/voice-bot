@@ -1,7 +1,6 @@
 package voicechain
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -20,44 +19,6 @@ const (
 	End    = StateSessionEnd
 	Hangup = StateSessionHangup
 )
-
-// ========== 音频处理状态 ==========
-
-const (
-	// VAD 事件
-	StartSpeaking = "vad.speaking.start"
-	StartSilence  = "vad.silence.start"
-	Silence       = "vad.silence"
-
-	// 播放事件
-	StartPlay = "play.start"
-	StopPlay  = "play.stop"
-
-	// 打断事件
-	Interruption = "audio.interruption"
-
-	// DTMF 事件
-	DTMF = "dtmf.detected"
-)
-
-// ========== 打断方法 ==========
-
-const (
-	InterruptionMethodDTMF         = "dtmf"
-	InterruptionMethodVAD          = "vad"
-	InterruptionMethodTranscribing = "transcribing"
-	InterruptionChange             = "interruption.change"
-)
-
-// PlayStateData 播放状态数据
-type PlayStateData struct{}
-
-// VadMetric VAD 指标数据
-type VadMetric struct {
-	StartSilenceAt    time.Time `json:"startSilenceAt"`
-	StartSpeakingAt   time.Time `json:"startSpeakingAt"`
-	DialogID          string    `json:"dialogID"`
-}
 
 // ========== Turn 状态 ==========
 
@@ -133,10 +94,10 @@ func (t AudioEventType) String() string {
 type ConversationEvent int
 
 const (
-	EventIgnore ConversationEvent = iota // 噪音，忽略
-	EventBackchannel                     // 附和词 "嗯", "对", "好的"
-	EventInterrupt                       // 打断 "等一下", "不用了"
-	EventNewTurn                         // 新轮次 "帮我查天气"
+	EventIgnore      ConversationEvent = iota // 噪音，忽略
+	EventBackchannel                          // 附和词 "嗯", "对", "好的"
+	EventInterrupt                            // 打断 "等一下", "不用了"
+	EventNewTurn                              // 新轮次 "帮我查天气"
 )
 
 func (e ConversationEvent) String() string {
@@ -159,12 +120,12 @@ func (e ConversationEvent) String() string {
 type AgentCommand int
 
 const (
-	CmdNone AgentCommand = iota // 无动作
-	CmdStartAgent               // 开始 LLM chat + TTS synthesize
-	CmdStopPlayback             // 停止当前播放
-	CmdCancelAgent              // 取消当前 LLM chat / TTS synthesize
-	CmdCommitAgent              // 提交已播放内容到上下文
-	CmdPausePlayback            // 暂停播放（等待 backchannel 判定）
+	CmdNone          AgentCommand = iota // 无动作
+	CmdStartAgent                        // 开始 LLM chat + TTS synthesize
+	CmdStopPlayback                      // 停止当前播放
+	CmdCancelAgent                       // 取消当前 LLM chat / TTS synthesize
+	CmdCommitAgent                       // 提交已播放内容到上下文
+	CmdPausePlayback                     // 暂停播放（等待 backchannel 判定）
 )
 
 func (c AgentCommand) String() string {
@@ -246,49 +207,4 @@ type CompletedData struct {
 	Result     any           `json:"result"`
 	DialogID   string        `json:"dialogID"`
 	Timestamp  time.Time     `json:"timestamp"`
-}
-
-func (d *SessionData) String() string {
-	switch d.Type {
-	case SessionDataState:
-		return fmt.Sprintf("SessionData{Sender:%s, State:%s}", d.Sender, d.State)
-	case SessionDataFrame:
-		return fmt.Sprintf("SessionData{Sender:%s, Frame:%s}", d.Sender, d.Frame)
-	default:
-		return fmt.Sprintf("SessionData{Sender:%s, Type:%s}", d.Sender, d.Type)
-	}
-}
-
-func (s *StateEvent) String() string {
-	return fmt.Sprintf("StateEvent{State:%s, Params:%v}", s.State, s.Params)
-}
-
-func (s *StateEvent) SafeGetStr(idx int) string {
-	if idx < 0 || idx >= len(s.Params) {
-		return ""
-	}
-	if str, ok := s.Params[idx].(string); ok {
-		return str
-	}
-	return ""
-}
-
-func (s *StateEvent) SafeGetInt(idx int) int {
-	if idx < 0 || idx >= len(s.Params) {
-		return 0
-	}
-	if num, ok := s.Params[idx].(int); ok {
-		return num
-	}
-	return 0
-}
-
-func (s *StateEvent) SafeGetTime(idx int) time.Time {
-	if idx < 0 || idx >= len(s.Params) {
-		return time.Time{}
-	}
-	if t, ok := s.Params[idx].(time.Time); ok {
-		return t
-	}
-	return time.Time{}
 }

@@ -112,7 +112,7 @@ func NewMinimaxEngine(cfg EngineConfig) (Engine, error) {
 
 	wsURL := firstNonEmpty(cfg.URL, MinimaxWebSocketURL)
 
-	conn, err := ws.NewClient(ctx, ws.Config{
+	conn, err := ws.NewConnect(ctx, ws.Config{
 		URL:       wsURL,
 		Headers:   h,
 		TLSConfig: &tls.Config{InsecureSkipVerify: true},

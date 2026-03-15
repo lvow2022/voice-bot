@@ -51,7 +51,7 @@ type client struct {
 	err       error
 }
 
-func NewClient(parent context.Context, config Config) (Client, error) {
+func NewConnect(parent context.Context, config Config) (Client, error) {
 	if config.DialTimeout == 0 {
 		config.DialTimeout = 5 * time.Second
 	}
