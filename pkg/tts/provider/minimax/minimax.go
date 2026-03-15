@@ -10,9 +10,10 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"github.com/gorilla/websocket"
 	"voicebot/pkg/tts/types"
-	ws "voicebot/pkg/websocket"
 )
 
 // ============ Errors ============
@@ -28,26 +29,28 @@ var (
 // MinimaxProvider 实现 types.Provider 接口
 type MinimaxProvider struct {
 	cfg  Config
-	conn ws.Client
+	conn *websocket.Conn
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// 接收队列
+	// 读写通道
 	recvCh   chan *types.TtsEvent
+	sendCh   chan []byte
 	recvErr  error
 	recvOnce sync.Once
 
 	// 状态
 	closeOnce sync.Once
 	connected atomic.Bool
+	wg        sync.WaitGroup
 
 	// metrics
 	bytesRecv int64
 }
 
 // NewProvider 创建 Minimax Provider
-func NewProvider(cfg types.EngineConfig) (*MinimaxProvider, error) {
+func NewProvider(cfg types.ProviderConfig) (*MinimaxProvider, error) {
 	config := ParseConfig(cfg)
 
 	if config.APIKey == "" {
@@ -57,10 +60,11 @@ func NewProvider(cfg types.EngineConfig) (*MinimaxProvider, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &MinimaxProvider{
-		cfg:    config,
-		ctx:    ctx,
-		cancel: cancel,
-		recvCh: make(chan *types.TtsEvent, 128),
+		cfg:     config,
+		ctx:     ctx,
+		cancel:  cancel,
+		recvCh:  make(chan *types.TtsEvent, 128),
+		sendCh:  make(chan []byte, 128),
 	}
 
 	// 建立 WebSocket 连接
@@ -68,9 +72,6 @@ func NewProvider(cfg types.EngineConfig) (*MinimaxProvider, error) {
 		cancel()
 		return nil, err
 	}
-
-	// 启动接收循环
-	go p.recvLoop()
 
 	return p, nil
 }
@@ -80,11 +81,12 @@ func (p *MinimaxProvider) connect() error {
 	h := http.Header{}
 	h.Set("Authorization", fmt.Sprintf("Bearer %s", p.cfg.APIKey))
 
-	conn, err := ws.NewConnect(p.ctx, ws.Config{
-		URL:       p.cfg.URL,
-		Headers:   h,
-		TLSConfig: &tls.Config{InsecureSkipVerify: true},
-	})
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+	}
+
+	conn, _, err := dialer.DialContext(p.ctx, p.cfg.URL, h)
 	if err != nil {
 		return fmt.Errorf("connect websocket: %w", err)
 	}
@@ -97,6 +99,12 @@ func (p *MinimaxProvider) connect() error {
 	}
 
 	p.connected.Store(true)
+
+	// 启动读写循环
+	p.wg.Add(2)
+	go p.readLoop()
+	go p.writeLoop()
+
 	return nil
 }
 
@@ -116,7 +124,12 @@ func (p *MinimaxProvider) sendTaskStart() error {
 	req.AudioSetting.Format = p.cfg.Format
 	req.AudioSetting.Channel = p.cfg.Channels
 
-	return p.conn.SendTextJSON(req)
+	data, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal task_start: %w", err)
+	}
+
+	return p.conn.WriteMessage(websocket.TextMessage, data)
 }
 
 // Connect 实现 Provider.Connect（已由 NewProvider 完成，此方法用于重连）
@@ -133,10 +146,22 @@ func (p *MinimaxProvider) SendText(text string, _ map[string]any) error {
 		return ErrNotConnected
 	}
 
-	return p.conn.SendTextJSON(TaskContinueRequest{
+	req := TaskContinueRequest{
 		Event: EventTaskContinue,
 		Text:  text,
-	})
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal task_continue: %w", err)
+	}
+
+	select {
+	case p.sendCh <- data:
+		return nil
+	case <-p.ctx.Done():
+		return p.ctx.Err()
+	}
 }
 
 // RecvEvent 实现 Provider.RecvEvent
@@ -157,23 +182,30 @@ func (p *MinimaxProvider) Close() error {
 	p.closeOnce.Do(func() {
 		p.connected.Store(false)
 		p.cancel()
+
 		if p.conn != nil {
 			_ = p.conn.Close()
 		}
+
+		p.wg.Wait()
 		close(p.recvCh)
+		close(p.sendCh)
 	})
 	return nil
 }
 
-// recvLoop 接收循环
-func (p *MinimaxProvider) recvLoop() {
+// readLoop 读取循环
+func (p *MinimaxProvider) readLoop() {
+	defer p.wg.Done()
+	defer p.Close()
+
 	for {
 		select {
 		case <-p.ctx.Done():
 			p.setRecvErr(p.ctx.Err())
 			return
 		default:
-			rawMsg, err := p.conn.Recv()
+			_, rawMsg, err := p.conn.ReadMessage()
 			if err != nil {
 				p.setRecvErr(err)
 				return
@@ -192,6 +224,24 @@ func (p *MinimaxProvider) recvLoop() {
 				if ev.Type == types.EventCompleted || ev.Type == types.EventError {
 					return
 				}
+			}
+		}
+	}
+}
+
+// writeLoop 写入循环
+func (p *MinimaxProvider) writeLoop() {
+	defer p.wg.Done()
+	defer p.Close()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case data := <-p.sendCh:
+			if err := p.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				p.setRecvErr(err)
+				return
 			}
 		}
 	}

@@ -71,3 +71,21 @@ type TtsEvent struct {
 	IsFinal bool
 	Err     error
 }
+
+// ProviderConfig provider 配置
+type ProviderConfig struct {
+	Name    string         // provider 名称
+	Model   string         // 模型名称
+	URL     string         // 服务地址 (可选，使用默认)
+	APIKey  string         // API Key
+	VoiceID string         // 音色 ID
+	Speed   float64        // 语速
+	Options map[string]any // 扩展配置
+}
+
+// ClientConfig 客户端配置
+type ClientConfig struct {
+	Primary  ProviderConfig  // 主 provider
+	Fallback *ProviderConfig // 备用 provider (可选)
+	Session  SessionOptions  // 会话配置
+}

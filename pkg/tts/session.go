@@ -3,7 +3,9 @@ package tts
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"sync"
 	"sync/atomic"
 	"voicebot/pkg/stream"
@@ -123,6 +125,11 @@ loop:
 	for {
 		event, err := s.provider.RecvEvent()
 		if err != nil {
+			// if isNetError
+			if s.tryReconnect(err) {
+				continue
+			}
+
 			s.setErr(err)
 			break loop
 		}
@@ -207,4 +214,54 @@ func (s *TtsSession) AsyncSynthesize(text string, stream *stream.AudioStream) er
 
 func (s *TtsSession) SynthesizeDone() chan struct{} {
 	return s.synthDone
+}
+
+func (s *TtsSession) tryReconnect(err error) bool {
+	if s.closed.Load() {
+		return false
+	}
+
+	if !isReconnectable(err) {
+		return false
+	}
+
+	slog.Warn("tts reconnecting", "err", err)
+
+	if err := s.provider.Connect(s.ctx, s.opts); err != nil {
+		slog.Error("tts reconnect failed", "err", err)
+		return false
+	}
+
+	slog.Info("tts reconnected")
+	return true
+}
+
+// isReconnectable 判断错误是否可重连
+func isReconnectable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 上下文取消不重连
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	// 网络错误可重连
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	// 连接重置/关闭可重连
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+
+	// WebSocket 关闭错误 (gorilla/websocket)
+	if errors.Is(err, errors.New("websocket: close 1006 (abnormal closure): unexpected EOF")) {
+		return true
+	}
+
+	return false
 }

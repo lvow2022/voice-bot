@@ -13,14 +13,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/gorilla/websocket"
 	"voicebot/pkg/asr/types"
-	"voicebot/pkg/websocket"
 )
 
 // VolcanoProvider 火山引擎 ASR 协议适配器
 type VolcanoProvider struct {
 	config types.ProviderConfig
-	client websocket.Client
+	conn   *websocket.Conn
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -29,17 +30,24 @@ type VolcanoProvider struct {
 	closed  atomic.Bool
 	writeMu sync.Mutex
 
+	// 读通道
+	recvCh chan []byte
+
 	// 事件队列，用于缓冲多个事件并逐个返回
 	eventQueue []types.AsrEvent
 	eventMu    sync.Mutex
+
+	wg       sync.WaitGroup
+	closeOnce sync.Once
 }
 
 func NewVolcanoAdapter(cfg types.ProviderConfig) (*VolcanoProvider, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &VolcanoProvider{
-		config: cfg,
-		ctx:    ctx,
-		cancel: cancel,
+		config:  cfg,
+		ctx:     ctx,
+		cancel:  cancel,
+		recvCh:  make(chan []byte, 128),
 	}, nil
 }
 
@@ -60,25 +68,27 @@ func (a *VolcanoProvider) Connect(ctx context.Context, opts types.SessionOptions
 	headers.Set("X-Api-Resource-Id", a.config.ResourceID)
 	headers.Set("X-Api-Connect-Id", connectID)
 
-	wsConfig := websocket.Config{
-		URL:              volcanoWSURL,
-		Headers:          headers,
+	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 	}
 
-	connect, err := websocket.NewConnect(a.ctx, wsConfig)
+	conn, _, err := dialer.DialContext(a.ctx, volcanoWSURL, headers)
 	if err != nil {
 		return fmt.Errorf("dial volcano asr: %w", err)
 	}
 
-	a.client = connect
+	a.conn = conn
 
 	slog.Info("volcano asr connected", "connectId", connectID)
 
 	if err := a.sendFullClientRequest(); err != nil {
-		_ = a.client.Close()
+		_ = a.conn.Close()
 		return fmt.Errorf("send full connect request: %w", err)
 	}
+
+	// 启动读取循环
+	a.wg.Add(1)
+	go a.readLoop()
 
 	return nil
 }
@@ -110,7 +120,7 @@ func (a *VolcanoProvider) SendAudio(data []byte, isLast bool) error {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
 
-	return a.client.SendBinary(msg)
+	return a.conn.WriteMessage(websocket.BinaryMessage, msg)
 }
 
 // RecvEvent 接收并解析识别事件，每次返回一个事件
@@ -125,44 +135,73 @@ func (a *VolcanoProvider) RecvEvent() (*types.AsrEvent, error) {
 	}
 	a.eventMu.Unlock()
 
-	// 队列为空，从 WebSocket 读取新数据
-	data, err := a.client.Recv()
-	if err != nil {
-		return nil, err
-	}
+	// 队列为空，从通道读取新数据
+	select {
+	case <-a.ctx.Done():
+		return nil, a.ctx.Err()
+	case data := <-a.recvCh:
+		if data == nil {
+			return nil, fmt.Errorf("connection closed")
+		}
 
-	events, err := a.parseEvents(data)
-	if err != nil {
-		return nil, err
-	}
+		events, err := a.parseEvents(data)
+		if err != nil {
+			return nil, err
+		}
 
-	if len(events) == 0 {
-		return nil, nil
-	}
+		if len(events) == 0 {
+			return nil, nil
+		}
 
-	// 将除第一个外的所有事件放入队列
-	if len(events) > 1 {
-		a.eventMu.Lock()
-		a.eventQueue = append(a.eventQueue, events[1:]...)
-		a.eventMu.Unlock()
-	}
+		// 将除第一个外的所有事件放入队列
+		if len(events) > 1 {
+			a.eventMu.Lock()
+			a.eventQueue = append(a.eventQueue, events[1:]...)
+			a.eventMu.Unlock()
+		}
 
-	// 返回第一个事件
-	return &events[0], nil
+		// 返回第一个事件
+		return &events[0], nil
+	}
 }
 
 // Close 关闭连接
 func (a *VolcanoProvider) Close() error {
-	if a.closed.Swap(true) {
-		return nil
-	}
+	a.closeOnce.Do(func() {
+		a.closed.Store(true)
+		a.cancel()
 
-	a.cancel()
+		if a.conn != nil {
+			_ = a.conn.Close()
+		}
 
-	if a.client != nil {
-		return a.client.Close()
-	}
+		a.wg.Wait()
+		close(a.recvCh)
+	})
 	return nil
+}
+
+// readLoop 读取循环
+func (a *VolcanoProvider) readLoop() {
+	defer a.wg.Done()
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+			_, data, err := a.conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			select {
+			case <-a.ctx.Done():
+				return
+			case a.recvCh <- data:
+			}
+		}
+	}
 }
 
 func (a *VolcanoProvider) sendFullClientRequest() error {
@@ -225,7 +264,7 @@ func (a *VolcanoProvider) sendFullClientRequest() error {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
 
-	return a.client.SendBinary(msg)
+	return a.conn.WriteMessage(websocket.BinaryMessage, msg)
 }
 
 func (a *VolcanoProvider) buildHeader(msgType, flag, serialize, compress byte) []byte {

@@ -8,7 +8,7 @@ import (
 )
 
 // CreateProvider 根据配置创建 Provider
-func CreateProvider(cfg types.EngineConfig) (types.Provider, error) {
+func CreateProvider(cfg types.ProviderConfig) (types.Provider, error) {
 	switch cfg.Name {
 	case "minimax":
 		return minimax.NewProvider(cfg)

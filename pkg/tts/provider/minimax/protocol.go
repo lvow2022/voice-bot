@@ -85,23 +85,20 @@ type Config struct {
 	URL           string
 }
 
-// ParseConfig 从 EngineConfig 解析配置
-func ParseConfig(cfg types.EngineConfig) Config {
+// ParseConfig 从 ProviderConfig 解析配置
+func ParseConfig(cfg types.ProviderConfig) Config {
 	opts := cfg.Options
 
 	c := Config{
-		APIKey:        cfg.APIKey,
-		VoiceID:       cfg.VoiceID,
-		Model:         cfg.Model,
-		SpeedRatio:    cfg.Speed,
-		SampleRate:    cfg.SampleRate,
-		Emotion:       getString(opts, "emotion"),
-		LanguageBoost: getString(opts, "languageBoost"),
-		Format:        getString(opts, "format"),
-		Volume:        getFloat64(opts, "volume"),
-		Pitch:         getFloat64(opts, "pitch"),
-		Channels:      getInt(opts, "channels"),
-		URL:           cfg.URL,
+		APIKey:     cfg.APIKey,
+		VoiceID:    cfg.VoiceID,
+		Model:      cfg.Model,
+		SpeedRatio: cfg.Speed,
+		Emotion:    getString(opts, "emotion"),
+		Format:     getString(opts, "format"),
+		Volume:     getFloat64(opts, "volume"),
+		Pitch:      getFloat64(opts, "pitch"),
+		URL:        cfg.URL,
 	}
 
 	// 设置默认值
