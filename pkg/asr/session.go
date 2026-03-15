@@ -3,7 +3,9 @@ package asr
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,6 +143,9 @@ loop:
 	for {
 		event, err := s.provider.RecvEvent()
 		if err != nil {
+			if s.tryReconnect(err) {
+				continue
+			}
 			s.setErr(err)
 			break loop
 		}
@@ -183,4 +188,50 @@ func (s *AsrSession) setErr(err error) {
 	s.errOnce.Do(func() {
 		s.err = err
 	})
+}
+
+// tryReconnect 尝试重连
+func (s *AsrSession) tryReconnect(err error) bool {
+	if s.closed.Load() {
+		return false
+	}
+
+	if !isReconnectable(err) {
+		return false
+	}
+
+	slog.Warn("asr reconnecting", "err", err)
+
+	if err := s.provider.Connect(s.ctx, s.opts); err != nil {
+		slog.Error("asr reconnect failed", "err", err)
+		return false
+	}
+
+	slog.Info("asr reconnected")
+	return true
+}
+
+// isReconnectable 判断错误是否可重连
+func isReconnectable(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 上下文取消不重连
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	// 网络错误可重连
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	// 连接重置/关闭可重连
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+
+	return false
 }
