@@ -1,4 +1,4 @@
-package asr
+package tts
 
 import (
 	"context"
@@ -6,21 +6,21 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
-	"voicebot/pkg/asr/types"
+	"voicebot/pkg/stream"
+	"voicebot/pkg/tts/types"
 )
 
 var (
-	ErrSessionClosed  = errors.New("asr session closed")
-	ErrSendBufferFull = errors.New("asr send buffer full")
+	ErrSessionClosed  = errors.New("tts session closed")
+	ErrSendBufferFull = errors.New("tts send buffer full")
 )
 
-type AsrSession struct {
+type TtsSession struct {
 	provider types.Provider
 	opts     types.SessionOptions
 
-	writeCh chan []byte
-	readCh  chan *types.AsrEvent
+	writeCh chan string
+	readCh  chan *types.TtsEvent
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -33,29 +33,24 @@ type AsrSession struct {
 	errOnce sync.Once
 	err     error
 
-	// metrics
-	startTime   time.Time
-	bytesSent   int64
-	bytesRecv   int64
-	audioFrames int64
+	synthDone chan struct{}
 }
 
-func NewASRSession(
+func NewTtsSession(
 	ctx context.Context,
 	provider types.Provider,
 	opts types.SessionOptions,
-) (*AsrSession, error) {
+) (*TtsSession, error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 
-	s := &AsrSession{
-		provider:  provider,
-		opts:      opts,
-		writeCh:   make(chan []byte, 32),
-		readCh:    make(chan *types.AsrEvent, 32),
-		ctx:       ctx,
-		cancel:    cancel,
-		startTime: time.Now(),
+	s := &TtsSession{
+		provider: provider,
+		opts:     opts,
+		writeCh:  make(chan string, 32),
+		readCh:   make(chan *types.TtsEvent, 32),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 
 	if err := provider.Connect(ctx, opts); err != nil {
@@ -73,26 +68,22 @@ func NewASRSession(
 	return s, nil
 }
 
-func (s *AsrSession) Send(frame types.AudioFrame) error {
-
+func (s *TtsSession) Send(text string) error {
 	if s.closed.Load() {
 		return ErrSessionClosed
 	}
 
 	select {
-
 	case <-s.ctx.Done():
 		return s.Err()
-
-	case s.writeCh <- frame.Data:
+	case s.writeCh <- text:
 		return nil
-
 	default:
 		return ErrSendBufferFull
 	}
 }
 
-func (s *AsrSession) Recv() (*types.AsrEvent, error) {
+func (s *TtsSession) Recv() (*types.TtsEvent, error) {
 
 	select {
 
@@ -104,7 +95,7 @@ func (s *AsrSession) Recv() (*types.AsrEvent, error) {
 	}
 }
 
-func (s *AsrSession) Close() error {
+func (s *TtsSession) Close() error {
 
 	s.closeOnce.Do(func() {
 
@@ -121,21 +112,12 @@ func (s *AsrSession) Close() error {
 
 		close(s.readCh)
 
-		duration := time.Since(s.startTime)
-
-		slog.Debug("asr session closed",
-			"duration", duration,
-			"bytes_sent", atomic.LoadInt64(&s.bytesSent),
-			"bytes_recv", atomic.LoadInt64(&s.bytesRecv),
-			"audio_frames", atomic.LoadInt64(&s.audioFrames),
-		)
 	})
 
 	return nil
 }
 
-// readLoop 读取循环
-func (s *AsrSession) readLoop() {
+func (s *TtsSession) readLoop() {
 	defer s.wg.Done()
 loop:
 	for {
@@ -154,8 +136,7 @@ loop:
 	}
 }
 
-// writeLoop 写入循环
-func (s *AsrSession) writeLoop() {
+func (s *TtsSession) writeLoop() {
 	defer s.wg.Done()
 loop:
 	for {
@@ -164,7 +145,7 @@ loop:
 			s.setErr(s.ctx.Err())
 			break loop
 		case data := <-s.writeCh:
-			if err := s.provider.SendAudio(data, false); err != nil {
+			if err := s.provider.SendText(data, nil); err != nil {
 				s.setErr(err)
 				break loop
 			}
@@ -172,15 +153,58 @@ loop:
 	}
 }
 
-func (s *AsrSession) Err() error {
+func (s *TtsSession) Err() error {
 	return s.err
 }
 
-func (s *AsrSession) setErr(err error) {
+func (s *TtsSession) setErr(err error) {
 	if err == nil {
 		return
 	}
 	s.errOnce.Do(func() {
 		s.err = err
 	})
+}
+
+func (s *TtsSession) AsyncSynthesize(text string, stream *stream.AudioStream) error {
+	s.synthDone = make(chan struct{})
+	if err := s.Send(text); err != nil {
+		return err
+	}
+
+	go func() {
+		defer func() {
+			close(s.synthDone)
+		}()
+
+		for {
+			event, err := s.Recv()
+			if err != nil {
+				return
+			}
+
+			switch event.Type {
+			case types.EventAudioChunk:
+				if len(event.Data) > 0 {
+					if err := stream.Push(event.Data, false); err != nil {
+						return
+					}
+				}
+			case types.EventCompleted:
+				if err := stream.Push(nil, true); err != nil {
+					return
+				}
+
+				return
+			case types.EventError:
+
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (s *TtsSession) SynthesizeDone() chan struct{} {
+	return s.synthDone
 }

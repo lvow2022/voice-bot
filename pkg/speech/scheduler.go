@@ -2,7 +2,6 @@ package speech
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
@@ -13,9 +12,9 @@ import (
 type Scheduler struct {
 	config Config
 
-	splitter *SentenceSplitter
-	engine   tts.Engine
-	player   *stream.StreamPlayer
+	splitter   *SentenceSplitter
+	ttsSession *tts.TtsSession
+	player     *stream.StreamPlayer
 
 	mu              sync.Mutex
 	pendingSentence []string
@@ -25,13 +24,13 @@ type Scheduler struct {
 	wg     sync.WaitGroup
 }
 
-func NewScheduler(engine tts.Engine, player *stream.StreamPlayer, config Config) *Scheduler {
+func NewScheduler(ttsSession *tts.TtsSession, player *stream.StreamPlayer, config Config) *Scheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Scheduler{
 		config:          config,
 		splitter:        NewSentenceSplitter(config.MinSentenceLen, config.MaxSentenceLen),
-		engine:          engine,
+		ttsSession:      ttsSession,
 		player:          player,
 		pendingSentence: make([]string, 0, config.WindowSize()),
 		ctx:             ctx,
@@ -72,28 +71,22 @@ func (s *Scheduler) synthesizeNext() {
 		s.mu.Unlock()
 		return
 	}
+
 	sentence := s.pendingSentence[0]
 	s.pendingSentence = s.pendingSentence[1:]
 	s.mu.Unlock()
 
 	audioStream := stream.NewAudioStream(0)
 	audioStream.PushFilter(s.config.Filters...)
-
-	sess, err := s.engine.NewSession(s.ctx, audioStream)
-	if err != nil {
-		log.Printf("[Scheduler] 创建 session 失败: %v", err)
-		return
-	}
-	defer sess.Close()
-
 	s.player.Enqueue(audioStream)
 
-	if err := sess.SendText(sentence, nil); err != nil {
-		log.Printf("[Scheduler] 发送文本失败: %v", err)
+	err := s.ttsSession.AsyncSynthesize(sentence, audioStream)
+	if err != nil {
+		_ = audioStream.Push(nil, false)
 		return
 	}
 
-	<-sess.Done()
+	<-s.ttsSession.SynthesizeDone()
 }
 
 func (s *Scheduler) Feed(token string) {
@@ -125,7 +118,7 @@ func (s *Scheduler) Reset() {
 func (s *Scheduler) Close() error {
 	s.cancel()
 	s.player.Close()
-	s.engine.Close()
+	_ = s.ttsSession.Close()
 	s.wg.Wait()
 	return nil
 }

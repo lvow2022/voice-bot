@@ -88,7 +88,7 @@ func (c *AsrClient) createSessionWithFallback(ctx context.Context, opts types.Se
 		}
 
 		// 创建 session
-		session, err := newASRSession(ctx, provider, opts, c.config)
+		session, err := NewASRSession(ctx, provider, opts)
 		if err != nil {
 			_ = provider.Close()
 			lastErr = err

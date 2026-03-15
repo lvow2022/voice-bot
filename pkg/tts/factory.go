@@ -2,31 +2,22 @@ package tts
 
 import (
 	"errors"
+
+	"voicebot/pkg/tts/provider/minimax"
+	"voicebot/pkg/tts/types"
 )
 
-// EngineConfig provider 配置
-type EngineConfig struct {
-	Name       string
-	Model      string
-	URL        string
-	APIKey     string
-	VoiceID    string
-	Speed      float64
-	SampleRate int
-	Options    map[string]any // 扩展配置
-}
-
-// CreateEngine 根据配置创建引擎
-func CreateEngine(cfg EngineConfig) (Engine, error) {
+// CreateProvider 根据配置创建 Provider
+func CreateProvider(cfg types.EngineConfig) (types.Provider, error) {
 	switch cfg.Name {
 	case "minimax":
-		return NewMinimaxEngine(cfg)
+		return minimax.NewProvider(cfg)
 	default:
-		return nil, errors.New("unknown engine: " + cfg.Name)
+		return nil, errors.New("unknown provider: " + cfg.Name)
 	}
 }
 
-// RegisteredEngines 返回支持的引擎名称列表
-func RegisteredEngines() []string {
+// RegisteredProviders 返回支持的 Provider 名称列表
+func RegisteredProviders() []string {
 	return []string{"minimax"}
 }
