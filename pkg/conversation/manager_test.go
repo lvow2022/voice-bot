@@ -2,6 +2,8 @@ package conversation
 
 import (
 	"testing"
+
+	"voicebot/pkg/voicechain"
 )
 
 func TestTurnManager(t *testing.T) {
@@ -161,7 +163,7 @@ func TestConversationManager_FullFlow(t *testing.T) {
 	}
 
 	// 2. 模拟 Agent 开始处理
-	mgr.HandleSystemEvent(SystemEvent{Type: SystemEventAgentStart})
+	mgr.HandleSystemEvent(voicechain.SystemEvent{Type: voicechain.SystemEventAgentStart})
 	if mgr.turnManager.IsAgentProcessing() {
 		// OK
 	} else {
@@ -169,7 +171,7 @@ func TestConversationManager_FullFlow(t *testing.T) {
 	}
 
 	// 3. 模拟 Agent 开始说话
-	mgr.HandleSystemEvent(SystemEvent{Type: SystemEventAgentSpeak})
+	mgr.HandleSystemEvent(voicechain.SystemEvent{Type: voicechain.SystemEventAgentSpeak})
 	if mgr.turnManager.IsAgentSpeaking() {
 		// OK
 	} else {
@@ -248,7 +250,7 @@ func TestEventQueue(t *testing.T) {
 	// 推入事件
 	q.PushAudio(AudioEvent{Type: VADStart})
 	q.PushAudio(AudioEvent{Type: ASRFinal, Text: "test"})
-	q.PushSystem(SystemEvent{Type: SystemEventAgentStart})
+	q.PushSystem(voicechain.SystemEvent{Type: voicechain.SystemEventAgentStart})
 	q.PushPlaybackDone()
 
 	if q.Len() != 4 {

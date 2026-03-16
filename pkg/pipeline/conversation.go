@@ -90,11 +90,11 @@ func (p *ConversationPipeline) GetManager() *conversation.ConversationManager {
 // buildRequest 构建帧请求（同步，在主线程中执行）
 func (p *ConversationPipeline) buildRequest(_ voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[conversationRequest], error) {
 	// 处理系统事件帧
-	if sysFrame, ok := frame.(*voicechain.SystemEventFrame); ok {
+	if sysEvent, ok := frame.(*voicechain.SystemEvent); ok {
 		return &voicechain.FrameRequest[conversationRequest]{
 			Req: conversationRequest{
 				isSystem: true,
-				sysType:  sysFrame.Type,
+				sysType:  sysEvent.Type,
 			},
 		}, nil
 	}
@@ -117,9 +117,9 @@ func (p *ConversationPipeline) buildRequest(_ voicechain.SessionHandler, frame v
 func (p *ConversationPipeline) execute(_ context.Context, h voicechain.SessionHandler, req voicechain.FrameRequest[conversationRequest]) error {
 	if req.Req.isSystem {
 		// 处理系统事件
-		cmd := p.manager.HandleSystemEvent(conversation.SystemEvent{
-			Type: convertSystemEventType(req.Req.sysType),
-			Data: nil,
+		cmd := p.manager.HandleSystemEvent(voicechain.SystemEvent{
+			Type:    req.Req.sysType,
+			Payload: nil,
 		})
 		if cmd != conversation.CmdNone {
 			h.EmitFrame(p, &voicechain.CommandFrame{
@@ -141,20 +141,6 @@ func (p *ConversationPipeline) execute(_ context.Context, h voicechain.SessionHa
 	}
 
 	return nil
-}
-
-// convertSystemEventType 将 voicechain.SystemEventType 转换为 conversation.SystemEventType
-func convertSystemEventType(t voicechain.SystemEventType) conversation.SystemEventType {
-	switch t {
-	case voicechain.SystemEventAgentStart:
-		return conversation.SystemEventAgentStart
-	case voicechain.SystemEventAgentSpeak:
-		return conversation.SystemEventAgentSpeak
-	case voicechain.SystemEventPlaybackFinished:
-		return conversation.SystemEventPlaybackFinished
-	default:
-		return conversation.SystemEventAgentStart
-	}
 }
 
 // DefaultEventMapper 默认的事件映射器

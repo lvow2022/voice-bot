@@ -168,14 +168,6 @@ func (m *audioProcessManager) OnEnd(_ voicechain.SessionHandler) error {
 	return nil
 }
 
-// 状态常量
-const (
-	StateVADStart  = "audio.vad.start"
-	StateVADStop   = "audio.vad.stop"
-	StateASRPartial = "audio.asr.partial"
-	StateASRFinal   = "audio.asr.final"
-)
-
 // createVADHandler 创建 VAD 事件处理器
 func (m *audioProcessManager) createVADHandler(h voicechain.SessionHandler) audio.VADHandler {
 	return func(duration time.Duration, speaking bool, silence bool) {
@@ -185,14 +177,14 @@ func (m *audioProcessManager) createVADHandler(h voicechain.SessionHandler) audi
 		if speaking && !m.speaking {
 			// 语音开始
 			m.speaking = true
-			h.EmitState(m, StateVADStart)
+			h.EmitState(m, voicechain.StateVADStart)
 			slog.Debug("vad: speech start", "duration", duration)
 		}
 
 		if silence && m.speaking {
 			// 语音结束
 			m.speaking = false
-			h.EmitState(m, StateVADStop)
+			h.EmitState(m, voicechain.StateVADStop)
 			slog.Debug("vad: speech end", "duration", duration)
 		}
 	}
@@ -223,9 +215,9 @@ func (m *audioProcessManager) recvLoop(h voicechain.SessionHandler) {
 			// 根据事件类型发送状态
 			switch event.Type {
 			case types.EventPartial:
-				h.EmitState(m, StateASRPartial, event.Text)
+				h.EmitState(m, voicechain.StateASRPartial, event.Text)
 			case types.EventFinal:
-				h.EmitState(m, StateASRFinal, event.Text)
+				h.EmitState(m, voicechain.StateASRFinal, event.Text)
 			}
 
 			// 发送帧给下游 pipeline

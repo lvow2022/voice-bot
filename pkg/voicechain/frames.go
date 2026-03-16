@@ -137,20 +137,6 @@ func (t SystemEventType) String() string {
 	}
 }
 
-// SystemEventFrame 系统事件帧，用于传递 Agent 状态
-type SystemEventFrame struct {
-	Type    SystemEventType `json:"type"`
-	Payload any             `json:"payload,omitempty"`
-}
-
-func (f *SystemEventFrame) Body() []byte {
-	return nil
-}
-
-func (f *SystemEventFrame) String() string {
-	return fmt.Sprintf("SystemEventFrame{Type: %s}", f.Type)
-}
-
 // CommandFrame 控制命令帧，封装 AgentCommand
 type CommandFrame struct {
 	Command   AgentCommand `json:"command"`

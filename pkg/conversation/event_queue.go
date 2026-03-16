@@ -3,6 +3,8 @@ package conversation
 import (
 	"context"
 	"sync"
+
+	"voicebot/pkg/voicechain"
 )
 
 // EventQueue 管理事件顺序，保证 ConversationManager 内部处理是顺序一致的
@@ -19,31 +21,19 @@ type EventQueue struct {
 // queueEvent 内部队列事件
 type queueEvent struct {
 	audioEvent   *AudioEvent
-	systemEvent  *SystemEvent
+	systemEvent  *voicechain.SystemEvent
 	playbackDone bool
 }
 
 // EventHandler 事件处理器接口
 type EventHandler interface {
 	HandleAudioEvent(event AudioEvent) AgentCommand
-	HandleSystemEvent(event SystemEvent) AgentCommand
+	HandleSystemEvent(event voicechain.SystemEvent) AgentCommand
 	HandlePlaybackFinished() AgentCommand
 }
 
-// SystemEvent 系统事件
-type SystemEvent struct {
-	Type SystemEventType
-	Data any
-}
-
-// SystemEventType 系统事件类型
-type SystemEventType int
-
-const (
-	SystemEventAgentStart SystemEventType = iota
-	SystemEventAgentSpeak
-	SystemEventPlaybackFinished
-)
+// SystemEvent 已移至 voicechain 包
+// 使用 voicechain.SystemEvent 替代
 
 // NewEventQueue 创建新的事件队列
 func NewEventQueue() *EventQueue {
@@ -73,7 +63,7 @@ func (q *EventQueue) PushAudio(event AudioEvent) {
 }
 
 // PushSystem 推入系统事件
-func (q *EventQueue) PushSystem(event SystemEvent) {
+func (q *EventQueue) PushSystem(event voicechain.SystemEvent) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 

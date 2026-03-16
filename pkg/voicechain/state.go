@@ -1,6 +1,7 @@
 package voicechain
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -89,6 +90,22 @@ func (t AudioEventType) String() string {
 	}
 }
 
+// StateString 返回用于 EmitState 的状态字符串
+func (t AudioEventType) StateString() string {
+	switch t {
+	case VADStart:
+		return StateVADStart
+	case VADStop:
+		return StateVADStop
+	case ASRPartial:
+		return StateASRPartial
+	case ASRFinal:
+		return StateASRFinal
+	default:
+		return ""
+	}
+}
+
 // ========== 对话事件类型 ==========
 
 type ConversationEvent int
@@ -162,6 +179,31 @@ type AudioEvent struct {
 	Type AudioEventType
 	Text string
 }
+
+// SystemEvent 系统事件，实现 Frame 接口
+type SystemEvent struct {
+	Type    SystemEventType
+	Payload any
+}
+
+// Body 实现 Frame 接口
+func (e *SystemEvent) Body() []byte {
+	return nil
+}
+
+// String 实现 Frame 接口
+func (e *SystemEvent) String() string {
+	return fmt.Sprintf("SystemEvent{Type: %s}", e.Type)
+}
+
+// ========== 音频处理状态（用于 EmitState）==========
+
+const (
+	StateVADStart   = "audio.vad.start"
+	StateVADStop    = "audio.vad.stop"
+	StateASRPartial = "audio.asr.partial"
+	StateASRFinal   = "audio.asr.final"
+)
 
 // ConversationState 对话状态
 type ConversationState struct {

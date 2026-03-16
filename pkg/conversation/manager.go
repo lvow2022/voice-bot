@@ -2,6 +2,8 @@ package conversation
 
 import (
 	"log/slog"
+
+	"voicebot/pkg/voicechain"
 )
 
 // ConversationManager 对话管理器 - 主运行时控制器
@@ -120,19 +122,19 @@ func (m *ConversationManager) HandleAudioEvent(event AudioEvent) AgentCommand {
 
 // HandleSystemEvent 处理系统事件
 // 实现 EventHandler 接口
-func (m *ConversationManager) HandleSystemEvent(event SystemEvent) AgentCommand {
+func (m *ConversationManager) HandleSystemEvent(event voicechain.SystemEvent) AgentCommand {
 	m.logger.Debug("handle system event", "type", event.Type)
 
 	var cmd AgentCommand
 
 	switch event.Type {
-	case SystemEventAgentStart:
+	case voicechain.SystemEventAgentStart:
 		m.turnManager.HandleAgentStart()
 		m.notifyStateChange()
-	case SystemEventAgentSpeak:
+	case voicechain.SystemEventAgentSpeak:
 		m.turnManager.HandleAgentSpeak()
 		m.notifyStateChange()
-	case SystemEventPlaybackFinished:
+	case voicechain.SystemEventPlaybackFinished:
 		cmd = m.handlePlaybackFinished()
 	}
 
@@ -250,7 +252,7 @@ func (m *ConversationManager) PushEvent(event AudioEvent) {
 }
 
 // PushSystemEvent 推入系统事件（异步）
-func (m *ConversationManager) PushSystemEvent(event SystemEvent) {
+func (m *ConversationManager) PushSystemEvent(event voicechain.SystemEvent) {
 	m.eventQueue.PushSystem(event)
 }
 
