@@ -112,3 +112,56 @@ func (d *AudioFrame) String() string {
 	return fmt.Sprintf("AudioFrame{Payload: %d bytes, IsFirstFrame: %t, IsSynthesized: %t, IsSilence: %t}",
 		len(d.Payload), d.IsFirstFrame, d.IsSynthesized, d.IsSilence)
 }
+
+// ========== Conversation Pipeline Frames ==========
+
+// SystemEventType 系统事件类型
+type SystemEventType int
+
+const (
+	SystemEventAgentStart        SystemEventType = iota // Agent 开始处理
+	SystemEventAgentSpeak                              // Agent 开始说话
+	SystemEventPlaybackFinished                        // 播放完成
+)
+
+func (t SystemEventType) String() string {
+	switch t {
+	case SystemEventAgentStart:
+		return "AgentStart"
+	case SystemEventAgentSpeak:
+		return "AgentSpeak"
+	case SystemEventPlaybackFinished:
+		return "PlaybackFinished"
+	default:
+		return "Unknown"
+	}
+}
+
+// SystemEventFrame 系统事件帧，用于传递 Agent 状态
+type SystemEventFrame struct {
+	Type    SystemEventType `json:"type"`
+	Payload any             `json:"payload,omitempty"`
+}
+
+func (f *SystemEventFrame) Body() []byte {
+	return nil
+}
+
+func (f *SystemEventFrame) String() string {
+	return fmt.Sprintf("SystemEventFrame{Type: %s}", f.Type)
+}
+
+// CommandFrame 控制命令帧，封装 AgentCommand
+type CommandFrame struct {
+	Command   AgentCommand `json:"command"`
+	Text      string       `json:"text,omitempty"`      // 关联的文本（如用户输入）
+	Timestamp time.Time    `json:"timestamp"`
+}
+
+func (f *CommandFrame) Body() []byte {
+	return nil
+}
+
+func (f *CommandFrame) String() string {
+	return fmt.Sprintf("CommandFrame{Command: %s, Text: %q}", f.Command, f.Text)
+}
