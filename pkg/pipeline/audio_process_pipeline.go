@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"voicebot/pkg/asr"
@@ -14,22 +15,22 @@ import (
 
 // AudioProcessOptions 音频处理 pipeline 配置选项
 type AudioProcessOptions struct {
-	ASR   types.ClientConfig      // ASR 客户端配置
-	Audio audio.AudioProcessOption // 音频处理配置
+	ASR       types.ClientConfig      // ASR 客户端配置
+	VADType   audio.VADType           // VAD 类型
+	VADOption audio.VADDetectorOption // VAD 配置
 }
 
-// audioProcessManager 音频处理管理器
-type audioProcessManager struct {
+// audioProcesser 音频处理管理器
+type audioProcesser struct {
 	opts AudioProcessOptions
 
 	// 运行时组件
-	audioProc  *audio.AudioProcess
+	vad        audio.VADDetector
 	asrClient  *asr.AsrClient
 	asrSession *asr.AsrSession
 
 	// VAD 状态
-	mu       sync.Mutex
-	speaking bool
+	speaking atomic.Bool
 
 	// 控制生命周期
 	wg     sync.WaitGroup
@@ -42,7 +43,7 @@ func NewAudioProcessPipeline(opts AudioProcessOptions) voicechain.HandleFunc {
 	executor := voicechain.NewExecutor[[]byte](128)
 	executor.Async = true
 
-	mgr := &audioProcessManager{opts: opts}
+	mgr := &audioProcesser{opts: opts}
 
 	executor.OnBegin = func(h voicechain.SessionHandler) error {
 		return mgr.OnBegin(h)
@@ -64,15 +65,20 @@ func NewAudioProcessPipeline(opts AudioProcessOptions) voicechain.HandleFunc {
 }
 
 // OnBegin 会话开始时初始化
-func (m *audioProcessManager) OnBegin(h voicechain.SessionHandler) error {
+func (m *audioProcesser) OnBegin(h voicechain.SessionHandler) error {
 	m.ctx, m.cancel = context.WithCancel(h.GetContext())
 
-	// 1. 初始化音频处理器（VAD + 降噪）
-	m.audioProc = audio.NewAudioProcess(m.opts.Audio)
+	// 1. 初始化 VAD 检测器
+	vad, err := audio.GetVAD(m.opts.VADType, m.opts.VADOption)
+	if err != nil {
+		return err
+	}
+	m.vad = vad
 
 	// 2. 创建 ASR 客户端
 	client, err := asr.NewClient(m.opts.ASR)
 	if err != nil {
+		m.vad.Close()
 		return err
 	}
 	m.asrClient = client
@@ -80,6 +86,7 @@ func (m *audioProcessManager) OnBegin(h voicechain.SessionHandler) error {
 	// 3. 创建 ASR session
 	session, err := m.asrClient.NewSession(m.ctx, m.opts.ASR.Session)
 	if err != nil {
+		m.vad.Close()
 		_ = m.asrClient.Close()
 		return err
 	}
@@ -93,8 +100,8 @@ func (m *audioProcessManager) OnBegin(h voicechain.SessionHandler) error {
 	return nil
 }
 
-// OnBuildRequest 构建请求（VAD 过滤）
-func (m *audioProcessManager) OnBuildRequest(h voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[[]byte], error) {
+// OnBuildRequest 构建请求（仅提取音频数据）
+func (m *audioProcesser) OnBuildRequest(_ voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[[]byte], error) {
 	// 获取音频数据
 	var payload []byte
 	switch f := frame.(type) {
@@ -108,33 +115,26 @@ func (m *audioProcessManager) OnBuildRequest(h voicechain.SessionHandler, frame 
 		return nil, nil
 	}
 
-	// 音频处理（降噪、VAD）
-	processed, err := m.audioProc.Process(
-		m.opts.Audio.VADOption.SampleRate,
-		payload,
-		m.createVADHandler(h),
-		nil, // DTMF handler
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	// 检查是否有语音
-	m.mu.Lock()
-	hasSpeech := m.speaking
-	m.mu.Unlock()
-
-	if !hasSpeech {
-		return nil, nil // 静音，跳过
-	}
-
 	return &voicechain.FrameRequest[[]byte]{
-		Req: processed,
+		Req: payload,
 	}, nil
 }
 
-// OnExecute 发送音频到 ASR
-func (m *audioProcessManager) OnExecute(_ context.Context, _ voicechain.SessionHandler, req voicechain.FrameRequest[[]byte]) error {
+// OnExecute 执行音频处理（VAD 检测 + ASR 发送）
+func (m *audioProcesser) OnExecute(ctx context.Context, h voicechain.SessionHandler, req voicechain.FrameRequest[[]byte]) error {
+	// VAD 检测
+	if m.vad != nil {
+		if err := m.vad.Process(req.Req, m.createVADHandler(h)); err != nil {
+			return err
+		}
+	}
+
+	// 检查是否有语音
+	if !m.speaking.Load() {
+		return nil // 静音，不发送到 ASR
+	}
+
+	// 发送到 ASR
 	if m.asrSession == nil {
 		return nil
 	}
@@ -146,14 +146,14 @@ func (m *audioProcessManager) OnExecute(_ context.Context, _ voicechain.SessionH
 }
 
 // OnEnd 会话结束时清理
-func (m *audioProcessManager) OnEnd(_ voicechain.SessionHandler) error {
+func (m *audioProcesser) OnEnd(_ voicechain.SessionHandler) error {
 	if m.cancel != nil {
 		m.cancel()
 	}
 	m.wg.Wait()
 
-	if m.audioProc != nil {
-		m.audioProc.Close()
+	if m.vad != nil {
+		m.vad.Close()
 	}
 	if m.asrClient != nil {
 		_ = m.asrClient.Close()
@@ -164,21 +164,18 @@ func (m *audioProcessManager) OnEnd(_ voicechain.SessionHandler) error {
 }
 
 // createVADHandler 创建 VAD 事件处理器
-func (m *audioProcessManager) createVADHandler(h voicechain.SessionHandler) audio.VADHandler {
+func (m *audioProcesser) createVADHandler(h voicechain.SessionHandler) audio.VADHandler {
 	return func(duration time.Duration, speaking bool, silence bool) {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-
-		if speaking && !m.speaking {
+		if speaking && !m.speaking.Load() {
 			// 语音开始
-			m.speaking = true
+			m.speaking.Store(true)
 			h.EmitEvent(m, voicechain.Event{Type: voicechain.StateVADSpeaking})
 			slog.Debug("vad: speech start", "duration", duration)
 		}
 
-		if silence && m.speaking {
+		if silence && m.speaking.Load() {
 			// 语音结束
-			m.speaking = false
+			m.speaking.Store(false)
 			h.EmitEvent(m, voicechain.Event{Type: voicechain.StateVADSilence})
 			slog.Debug("vad: speech end", "duration", duration)
 		}
@@ -186,7 +183,7 @@ func (m *audioProcessManager) createVADHandler(h voicechain.SessionHandler) audi
 }
 
 // recvLoop 接收 ASR 结果
-func (m *audioProcessManager) recvLoop(h voicechain.SessionHandler) {
+func (m *audioProcesser) recvLoop(h voicechain.SessionHandler) {
 	defer m.wg.Done()
 
 	for {

@@ -2,142 +2,129 @@ package conversation
 
 import (
 	"testing"
-
-	"voicebot/pkg/voicechain"
 )
 
-func TestTurnManager(t *testing.T) {
-	tm := NewTurnManager()
+func TestConversationManager_StateTransitions(t *testing.T) {
+	mgr := NewConversationManager()
 
-	// 初始状态应该是 TurnUser, PhaseIdle
-	if tm.GetState().Turn != TurnUser {
-		t.Errorf("initial turn should be TurnUser, got %v", tm.GetState().Turn)
-	}
-	if tm.GetState().Phase != PhaseIdle {
-		t.Errorf("initial phase should be PhaseIdle, got %v", tm.GetState().Phase)
+	// 初始状态应该是 StateUserTurn
+	if mgr.GetState() != StateUserTurn {
+		t.Errorf("initial state should be StateUserTurn, got %v", mgr.GetState())
 	}
 
-	// HandleVADStart
-	tm.HandleVADStart()
-	if !tm.IsUserTurn() {
-		t.Error("should be TurnUser after VADStart")
+	// AgentGenerating → StateAgentGenerating
+	mgr.HandleEvent(EventAgentGenerating, "")
+	if mgr.GetState() != StateAgentGenerating {
+		t.Errorf("state should be StateAgentGenerating, got %v", mgr.GetState())
 	}
 
-	// HandleAgentStart
-	tm.HandleAgentStart()
-	if !tm.IsAgentTurn() {
-		t.Error("should be TurnAgent after AgentStart")
-	}
-	if !tm.IsAgentGenerating() {
-		t.Error("should be PhaseGenerating after AgentStart")
+	// AgentSpeaking → StateAgentSpeaking
+	mgr.HandleEvent(EventAgentSpeaking, "")
+	if mgr.GetState() != StateAgentSpeaking {
+		t.Errorf("state should be StateAgentSpeaking, got %v", mgr.GetState())
 	}
 
-	// HandleAgentSpeak
-	tm.HandleAgentSpeak()
-	if !tm.IsAgentSpeaking() {
-		t.Error("should be PhaseSpeaking after AgentSpeak")
-	}
-
-	// HandlePlaybackFinished
-	tm.HandlePlaybackFinished()
-	if !tm.IsUserTurn() {
-		t.Error("should be TurnUser after PlaybackFinished")
+	// PlaybackDone → StateUserTurn
+	mgr.HandleEvent(EventPlaybackDone, "")
+	if mgr.GetState() != StateUserTurn {
+		t.Errorf("state should be StateUserTurn, got %v", mgr.GetState())
 	}
 }
 
-func TestBackchannelChecker(t *testing.T) {
-	checker := NewBackchannelChecker()
+func TestInterpreter_SemanticTypes(t *testing.T) {
+	i := NewDefaultInterpreter()
 
 	tests := []struct {
 		text string
-		want BackchannelType
+		want Semantic
 	}{
-		{"嗯", BackchannelACK},
-		{"对", BackchannelACK},
-		{"好的", BackchannelACK},
-		{"等一下", BackchannelInterrupt},
-		{"不用了", BackchannelInterrupt},
-		{"帮我查天气", BackchannelNewTurn},
-		{"", BackchannelIgnore},
+		{"嗯", SemanticBackchannel},
+		{"对", SemanticBackchannel},
+		{"好的", SemanticBackchannel},
+		{"等一下", SemanticInterrupt},
+		{"不用了", SemanticInterrupt},
+		{"帮我查天气", SemanticNewTurn},
+		{"", SemanticIgnore},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
-			got := checker.CheckInput(tt.text, 0, 0)
+			got := i.Interpret(tt.text)
 			if got != tt.want {
-				t.Errorf("CheckInput(%q) = %v, want %v", tt.text, got, tt.want)
+				t.Errorf("Interpret(%q) = %v, want %v", tt.text, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCommandGenerator_UserTurn(t *testing.T) {
-	cg := NewCommandGenerator()
-	state := State{Turn: TurnUser, Phase: PhaseIdle}
+func TestPolicy_UserTurn(t *testing.T) {
+	p := NewDefaultPolicy()
 
 	tests := []struct {
-		event Semantic
-		want  AgentCommand
+		event    Event
+		semantic Semantic
+		want     Command
 	}{
-		{SemanticNewTurn, CmdInvokeAgentGenerate},
-		{SemanticBackchannel, CmdNone},
-		{SemanticInterrupt, CmdNone},
-		{SemanticIgnore, CmdNone},
+		{EventASRFinal, SemanticNewTurn, CmdInvokeAgent},
+		{EventASRFinal, SemanticBackchannel, CmdNone},
+		{EventASRFinal, SemanticInterrupt, CmdNone},
+		{EventASRFinal, SemanticIgnore, CmdNone},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.event.String(), func(t *testing.T) {
-			got := cg.Generate(state, tt.event)
+		t.Run(tt.semantic.String(), func(t *testing.T) {
+			got := p.Decide(StateUserTurn, tt.event, tt.semantic)
 			if got != tt.want {
-				t.Errorf("Generate(TurnUser, %v) = %v, want %v", tt.event, got, tt.want)
+				t.Errorf("Decide(UserTurn, %v, %v) = %v, want %v", tt.event, tt.semantic, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCommandGenerator_AgentGenerating(t *testing.T) {
-	cg := NewCommandGenerator()
-	state := State{Turn: TurnAgent, Phase: PhaseGenerating}
+func TestPolicy_AgentGenerating(t *testing.T) {
+	p := NewDefaultPolicy()
 
 	tests := []struct {
-		event Semantic
-		want  AgentCommand
+		event    Event
+		semantic Semantic
+		want     Command
 	}{
-		{SemanticNewTurn, CmdCancelAgentGenerate},
-		{SemanticInterrupt, CmdCancelAgentGenerate},
-		{SemanticBackchannel, CmdNone},
-		{SemanticIgnore, CmdNone},
+		{EventASRFinal, SemanticNewTurn, CmdCancelAgent},
+		{EventASRFinal, SemanticInterrupt, CmdCancelAgent},
+		{EventASRFinal, SemanticBackchannel, CmdNone},
+		{EventASRFinal, SemanticIgnore, CmdNone},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.event.String(), func(t *testing.T) {
-			got := cg.Generate(state, tt.event)
+		t.Run(tt.semantic.String(), func(t *testing.T) {
+			got := p.Decide(StateAgentGenerating, tt.event, tt.semantic)
 			if got != tt.want {
-				t.Errorf("Generate(PhaseGenerating, %v) = %v, want %v", tt.event, got, tt.want)
+				t.Errorf("Decide(AgentGenerating, %v, %v) = %v, want %v", tt.event, tt.semantic, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCommandGenerator_AgentSpeaking(t *testing.T) {
-	cg := NewCommandGenerator()
-	state := State{Turn: TurnAgent, Phase: PhaseSpeaking}
+func TestPolicy_AgentSpeaking(t *testing.T) {
+	p := NewDefaultPolicy()
 
 	tests := []struct {
-		event Semantic
-		want  AgentCommand
+		event    Event
+		semantic Semantic
+		want     Command
 	}{
-		{SemanticInterrupt, CmdStopAgentPlayback},
-		{SemanticNewTurn, CmdStopAgentPlayback},
-		{SemanticBackchannel, CmdNone},
-		{SemanticIgnore, CmdNone},
+		{EventASRFinal, SemanticInterrupt, CmdStopPlayback},
+		{EventASRFinal, SemanticNewTurn, CmdStopPlayback},
+		{EventASRFinal, SemanticBackchannel, CmdNone},
+		{EventASRFinal, SemanticIgnore, CmdNone},
+		{EventVADStart, SemanticIgnore, CmdPausePlayback}, // VADStart 暂停播放
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.event.String(), func(t *testing.T) {
-			got := cg.Generate(state, tt.event)
+		t.Run(tt.event.String()+"_"+tt.semantic.String(), func(t *testing.T) {
+			got := p.Decide(StateAgentSpeaking, tt.event, tt.semantic)
 			if got != tt.want {
-				t.Errorf("Generate(PhaseSpeaking, %v) = %v, want %v", tt.event, got, tt.want)
+				t.Errorf("Decide(AgentSpeaking, %v, %v) = %v, want %v", tt.event, tt.semantic, got, tt.want)
 			}
 		})
 	}
@@ -145,52 +132,45 @@ func TestCommandGenerator_AgentSpeaking(t *testing.T) {
 
 func TestConversationManager_FullFlow(t *testing.T) {
 	var stateChanges []string
-	var commands []AgentCommand
+	var commands []Command
 
 	mgr := NewConversationManager(
 		WithOnStateChange(func(old, new State) {
 			stateChanges = append(stateChanges, old.String()+" -> "+new.String())
 		}),
-		WithOnCommand(func(cmd AgentCommand) {
+		WithOnCommand(func(cmd Command, text string) {
 			commands = append(commands, cmd)
 		}),
 	)
 
-	// 1. 用户说话: "帮我查天气" -> InvokeAgentGenerate
-	cmd := mgr.HandleAudioEvent(AudioEvent{Type: ASRFinal, Text: "帮我查天气"})
-	if cmd != CmdInvokeAgentGenerate {
-		t.Errorf("expected CmdInvokeAgentGenerate, got %v", cmd)
+	// 1. 用户说话: "帮我查天气" -> InvokeAgent
+	cmd := mgr.HandleEvent(EventASRFinal, "帮我查天气")
+	if cmd != CmdInvokeAgent {
+		t.Errorf("expected CmdInvokeAgent, got %v", cmd)
 	}
 
 	// 2. 模拟 Agent 开始生成
-	mgr.HandleSystemEvent(Event{Type: voicechain.StateAgentGenerating})
-	if mgr.turnManager.IsAgentGenerating() {
-		// OK
-	} else {
-		t.Error("should be PhaseGenerating")
+	mgr.HandleEvent(EventAgentGenerating, "")
+	if mgr.GetState() != StateAgentGenerating {
+		t.Errorf("state should be StateAgentGenerating, got %v", mgr.GetState())
 	}
 
 	// 3. 模拟 Agent 开始说话
-	mgr.HandleSystemEvent(Event{Type: voicechain.StateAgentSpeaking})
-	if mgr.turnManager.IsAgentSpeaking() {
-		// OK
-	} else {
-		t.Error("should be PhaseSpeaking")
+	mgr.HandleEvent(EventAgentSpeaking, "")
+	if mgr.GetState() != StateAgentSpeaking {
+		t.Errorf("state should be StateAgentSpeaking, got %v", mgr.GetState())
 	}
 
-	// 4. 用户打断: "等一下" -> StopAgentPlayback
-	cmd = mgr.HandleAudioEvent(AudioEvent{Type: ASRFinal, Text: "等一下"})
-	if cmd != CmdStopAgentPlayback {
-		t.Errorf("expected CmdStopAgentPlayback, got %v", cmd)
+	// 4. 用户打断: "等一下" -> StopPlayback
+	cmd = mgr.HandleEvent(EventASRFinal, "等一下")
+	if cmd != CmdStopPlayback {
+		t.Errorf("expected CmdStopPlayback, got %v", cmd)
 	}
 
 	// 5. 播放完成
-	cmd = mgr.HandlePlaybackFinished()
-	if cmd != CmdNone {
-		t.Errorf("expected CmdNone (playback finished is internal), got %v", cmd)
-	}
-	if mgr.GetState().Turn != TurnUser {
-		t.Error("should be TurnUser after playback finished")
+	mgr.HandleEvent(EventPlaybackDone, "")
+	if mgr.GetState() != StateUserTurn {
+		t.Errorf("state should be StateUserTurn, got %v", mgr.GetState())
 	}
 
 	t.Logf("state changes: %v", stateChanges)
@@ -198,62 +178,24 @@ func TestConversationManager_FullFlow(t *testing.T) {
 }
 
 func TestConversationManager_VADPause(t *testing.T) {
-	cg := NewCommandGenerator(WithPauseOnVADStart(true))
-	state := State{Turn: TurnAgent, Phase: PhaseSpeaking}
+	mgr := NewConversationManager()
 
-	cmd := cg.GenerateForVAD(state, VADStart)
-	if cmd != CmdPauseAgentPlayback {
-		t.Errorf("expected CmdPauseAgentPlayback, got %v", cmd)
+	// 设置为 AgentSpeaking 状态
+	mgr.SetState(StateAgentSpeaking)
+
+	// VADStart 应该返回暂停命令
+	cmd := mgr.HandleEvent(EventVADStart, "")
+	if cmd != CmdPausePlayback {
+		t.Errorf("expected CmdPausePlayback, got %v", cmd)
 	}
 }
 
-func TestContextManager(t *testing.T) {
-	cm := NewContextManager()
+func TestPolicy_NoPauseOnVADStart(t *testing.T) {
+	p := NewDefaultPolicy(WithPauseOnVADStart(false))
 
-	// 添加用户消息
-	cm.AddUserMessage("帮我查天气")
-	history := cm.GetHistory()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Role != "user" || history[0].Content != "帮我查天气" {
-		t.Errorf("unexpected history entry: %+v", history[0])
-	}
-
-	// 设置当前 Agent 回复
-	cm.SetCurrentAgentReply("好的，我来帮您查天气")
-	if cm.GetCurrentAgentReply() != "好的，我来帮您查天气" {
-		t.Errorf("unexpected current reply: %s", cm.GetCurrentAgentReply())
-	}
-
-	// 追加已播放内容
-	cm.AppendPlayedContent("好的，")
-	cm.AppendPlayedContent("我来帮您查天气")
-
-	// 提交
-	committed := cm.CommitPlayedContent()
-	if committed != "好的，我来帮您查天气" {
-		t.Errorf("unexpected committed content: %s", committed)
-	}
-
-	// 历史应该有 2 条
-	history = cm.GetHistory()
-	if len(history) != 2 {
-		t.Errorf("expected 2 history entries, got %d", len(history))
-	}
-}
-
-func TestEventQueue(t *testing.T) {
-	q := NewEventQueue()
-	defer q.Close()
-
-	// 推入事件
-	q.PushAudio(AudioEvent{Type: VADStart})
-	q.PushAudio(AudioEvent{Type: ASRFinal, Text: "test"})
-	q.PushSystem(voicechain.Event{Type: voicechain.StateAgentGenerating})
-	q.PushPlaybackDone()
-
-	if q.Len() != 4 {
-		t.Errorf("expected queue length 4, got %d", q.Len())
+	// VADStart 不应该返回暂停命令
+	got := p.Decide(StateAgentSpeaking, EventVADStart, SemanticIgnore)
+	if got != CmdNone {
+		t.Errorf("Decide with pauseOnVADStart=false should return CmdNone, got %v", got)
 	}
 }
