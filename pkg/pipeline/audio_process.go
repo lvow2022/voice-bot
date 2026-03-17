@@ -177,14 +177,14 @@ func (m *audioProcessManager) createVADHandler(h voicechain.SessionHandler) audi
 		if speaking && !m.speaking {
 			// 语音开始
 			m.speaking = true
-			h.EmitState(m, voicechain.StateVADStart)
+			h.EmitEvent(m, voicechain.Event{Type: voicechain.StateVADSpeaking})
 			slog.Debug("vad: speech start", "duration", duration)
 		}
 
 		if silence && m.speaking {
 			// 语音结束
 			m.speaking = false
-			h.EmitState(m, voicechain.StateVADStop)
+			h.EmitEvent(m, voicechain.Event{Type: voicechain.StateVADSilence})
 			slog.Debug("vad: speech end", "duration", duration)
 		}
 	}
@@ -215,9 +215,9 @@ func (m *audioProcessManager) recvLoop(h voicechain.SessionHandler) {
 			// 根据事件类型发送状态
 			switch event.Type {
 			case types.EventPartial:
-				h.EmitState(m, voicechain.StateASRPartial, event.Text)
+				h.EmitEvent(m, voicechain.Event{Type: voicechain.StateASRPartial, Payload: event.Text})
 			case types.EventFinal:
-				h.EmitState(m, voicechain.StateASRFinal, event.Text)
+				h.EmitEvent(m, voicechain.Event{Type: voicechain.StateASRFinal, Payload: event.Text})
 			}
 
 			// 发送帧给下游 pipeline

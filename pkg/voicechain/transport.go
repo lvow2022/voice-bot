@@ -120,7 +120,7 @@ incomingLoop:
 			if err != io.EOF {
 				tl.session.CauseError(tl, err)
 			} else {
-				tl.session.EmitState(tl, StateSessionHangup)
+				tl.session.EmitEvent(tl, Event{Type: StateSessionHangup})
 			}
 			break incomingLoop
 		}

@@ -2,63 +2,63 @@ package conversation
 
 // TurnManager 管理当前 Turn 和 Phase 状态
 type TurnManager struct {
-	state ConversationState
+	state State
 }
 
 // NewTurnManager 创建新的 TurnManager
 func NewTurnManager() *TurnManager {
 	return &TurnManager{
-		state: ConversationState{
-			Turn:  UserTurn,
-			Phase: AgentIdle,
+		state: State{
+			Turn:  TurnUser,
+			Phase: PhaseIdle,
 		},
 	}
 }
 
 // GetState 获取当前状态
-func (t *TurnManager) GetState() ConversationState {
+func (t *TurnManager) GetState() State {
 	return t.state
 }
 
 // SetState 设置状态
-func (t *TurnManager) SetState(state ConversationState) {
+func (t *TurnManager) SetState(state State) {
 	t.state = state
 }
 
 // SetTurn 设置轮次
-func (t *TurnManager) SetTurn(turn TurnState) {
+func (t *TurnManager) SetTurn(turn Turn) {
 	t.state.Turn = turn
 }
 
 // SetPhase 设置 Agent 阶段
-func (t *TurnManager) SetPhase(phase AgentPhase) {
+func (t *TurnManager) SetPhase(phase Phase) {
 	t.state.Phase = phase
 }
 
 // IsUserTurn 是否用户轮次
 func (t *TurnManager) IsUserTurn() bool {
-	return t.state.Turn == UserTurn
+	return t.state.Turn == TurnUser
 }
 
 // IsAgentTurn 是否 Agent 轮次
 func (t *TurnManager) IsAgentTurn() bool {
-	return t.state.Turn == AgentTurn
+	return t.state.Turn == TurnAgent
 }
 
-// IsAgentProcessing Agent 是否在处理中
-func (t *TurnManager) IsAgentProcessing() bool {
-	return t.state.Turn == AgentTurn && t.state.Phase == AgentProcessing
+// IsAgentGenerating Agent 是否在生成中
+func (t *TurnManager) IsAgentGenerating() bool {
+	return t.state.Turn == TurnAgent && t.state.Phase == PhaseGenerating
 }
 
 // IsAgentSpeaking Agent 是否在说话
 func (t *TurnManager) IsAgentSpeaking() bool {
-	return t.state.Turn == AgentTurn && t.state.Phase == AgentSpeaking
+	return t.state.Turn == TurnAgent && t.state.Phase == PhaseSpeaking
 }
 
 // HandleVADStart 处理 VAD_START 事件
 // 用户开始说话，切换到 UserTurn
 func (t *TurnManager) HandleVADStart() {
-	t.state.Turn = UserTurn
+	t.state.Turn = TurnUser
 }
 
 // HandleVADStop 处理 VAD_STOP 事件
@@ -70,37 +70,37 @@ func (t *TurnManager) HandleVADStop() {
 // HandleASRFinal 处理 ASR_FINAL 事件
 // 注意：只有在 UserTurn 时才更新状态
 // 在 AgentTurn 时，状态由外部命令（如 StopPlayback）控制
-func (t *TurnManager) HandleASRFinal(event ConversationEvent) ConversationState {
+func (t *TurnManager) HandleASRFinal(event Semantic) State {
 	// 只有在用户轮次时才更新状态
-	if t.state.Turn == UserTurn {
+	if t.state.Turn == TurnUser {
 		switch event {
-		case EventNewTurn, EventInterrupt:
+		case SemanticNewTurn, SemanticInterrupt:
 			// 新轮次或打断，状态保持 UserTurn，等待外部启动 Agent
-			t.state.Turn = UserTurn
-		case EventBackchannel:
+			t.state.Turn = TurnUser
+		case SemanticBackchannel:
 			// 附和词，状态不变
 		default:
-			// EventIgnore，状态不变
+			// SemanticIgnore，状态不变
 		}
 	}
 	// Agent 轮次时不改变状态，等待外部命令（如 StopPlayback）来改变
 	return t.state
 }
 
-// HandleAgentStart 处理 Agent 开始处理
+// HandleAgentStart 处理 Agent 开始生成
 func (t *TurnManager) HandleAgentStart() {
-	t.state.Turn = AgentTurn
-	t.state.Phase = AgentProcessing
+	t.state.Turn = TurnAgent
+	t.state.Phase = PhaseGenerating
 }
 
 // HandleAgentSpeak 处理 Agent 开始说话
 func (t *TurnManager) HandleAgentSpeak() {
-	t.state.Phase = AgentSpeaking
+	t.state.Phase = PhaseSpeaking
 }
 
 // HandlePlaybackFinished 处理播放完成
 // Agent 播放完成，切换回 UserTurn
 func (t *TurnManager) HandlePlaybackFinished() {
-	t.state.Turn = UserTurn
-	t.state.Phase = AgentIdle
+	t.state.Turn = TurnUser
+	t.state.Phase = PhaseIdle
 }

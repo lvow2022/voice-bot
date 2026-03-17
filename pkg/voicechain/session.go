@@ -16,7 +16,7 @@ type SessionHandler interface {
 	GetContext() context.Context
 	GetSession() *Session
 	CauseError(sender any, err error)
-	EmitState(sender any, state string, params ...any)
+	EmitEvent(sender any, event Event)
 	EmitFrame(sender any, frame Frame)
 	SendToOutput(sender any, frame Frame)
 	AddMetric(key string, duration time.Duration)
@@ -26,8 +26,8 @@ type SessionHandler interface {
 // FilterFunc 帧过滤函数
 type FilterFunc func(frame Frame) (bool, error)
 
-// StateFunc 状态处理函数
-type StateFunc func(event StateEvent)
+// EventFunc 事件处理函数
+type EventFunc func(event Event)
 
 // ErrorFunc 错误处理函数
 type ErrorFunc func(sender any, err error)
@@ -45,7 +45,7 @@ type Session struct {
 	encoder      EncodeFunc
 	decoder      EncodeFunc
 	values       sync.Map
-	stateHandles map[string][]StateFunc
+	eventHandles map[string][]EventFunc
 	handles      []HandleFunc
 	pipeline     []*PipelineHandler
 	errors       []ErrorFunc
@@ -65,7 +65,7 @@ func NewSession() *Session {
 	return &Session{
 		ID:           "session-" + time.Now().Format("20060102150405"),
 		values:       sync.Map{},
-		stateHandles: make(map[string][]StateFunc),
+		eventHandles: make(map[string][]EventFunc),
 		SampleRate:   16000,
 		Running:      false,
 		QueueSize:    128,
@@ -167,9 +167,9 @@ func (s *Session) Error(handles ...ErrorFunc) *Session {
 	return s
 }
 
-// On 设置状态处理
-func (s *Session) On(state string, handles ...StateFunc) *Session {
-	s.stateHandles[state] = append(s.stateHandles[state], handles...)
+// On 设置事件处理
+func (s *Session) On(eventType string, handles ...EventFunc) *Session {
+	s.eventHandles[eventType] = append(s.eventHandles[eventType], handles...)
 	return s
 }
 
@@ -230,7 +230,7 @@ func (s *Session) Serve() error {
 		s.Running = false
 		slog.Info("session stopped", "sessionID", s.ID)
 		s.cleanup()
-		s.EmitState(s, StateSessionEnd)
+		s.EmitEvent(s, Event{Type: StateSessionEnd})
 	}()
 
 	s.dataChan = make(chan *SessionData, s.QueueSize)
@@ -244,7 +244,7 @@ func (s *Session) Serve() error {
 		go tl.processOutgoing()
 	}
 
-	s.EmitState(s, StateSessionBegin)
+	s.EmitEvent(s, Event{Type: StateSessionBegin})
 	slog.Info("session started", "sessionID", s.ID)
 
 	// 主循环
@@ -325,21 +325,17 @@ func (s *Session) CauseError(sender any, err error) {
 	}
 }
 
-// EmitState 发送状态事件
-func (s *Session) EmitState(sender any, state string, params ...any) {
+// EmitEvent 发送事件
+func (s *Session) EmitEvent(sender any, event Event) {
 	sender = senderAsString(sender)
-	event := StateEvent{
-		State:  state,
-		Params: params,
-	}
 
-	slog.Debug("emit state", "sender", sender, "state", state, "params", params, "sessionID", s.ID)
+	slog.Debug("emit event", "sender", sender, "type", event.Type, "sessionID", s.ID)
 
 	data := &SessionData{
 		CreatedAt: time.Now(),
 		Sender:    sender,
 		Type:      SessionDataState,
-		State:     event,
+		Event:     event,
 	}
 
 	if s.dataChan == nil {
@@ -384,16 +380,16 @@ func (s *Session) EmitCallMetric(dialogID string, metric any) {
 func (s *Session) processData(data *SessionData) {
 	switch data.Type {
 	case SessionDataState:
-		// 处理特定状态
-		if handles, ok := s.stateHandles[data.State.State]; ok {
+		// 处理特定事件类型
+		if handles, ok := s.eventHandles[data.Event.Type]; ok {
 			for _, handle := range handles {
-				callHandleWithState(s, handle, data.State)
+				callHandleWithEvent(s, handle, data.Event)
 			}
 		}
-		// 处理通配符状态
-		if handles, ok := s.stateHandles["*"]; ok {
+		// 处理通配符事件
+		if handles, ok := s.eventHandles["*"]; ok {
 			for _, handle := range handles {
-				callHandleWithState(s, handle, data.State)
+				callHandleWithEvent(s, handle, data.Event)
 			}
 		}
 		// 传递给管道
@@ -412,13 +408,13 @@ func (s *Session) processData(data *SessionData) {
 	}
 }
 
-func callHandleWithState(s *Session, handle StateFunc, state StateEvent) {
+func callHandleWithEvent(s *Session, handle EventFunc, event Event) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("state panic", "sessionID", s.ID, "state", state, "error", r, "stacktrace", string(debug.Stack()))
+			slog.Error("event panic", "sessionID", s.ID, "event", event, "error", r, "stacktrace", string(debug.Stack()))
 		}
 	}()
-	handle(state)
+	handle(event)
 }
 
 func callHandleWithSessionData(s *Session, h SessionHandler, handle HandleFunc, data SessionData) {

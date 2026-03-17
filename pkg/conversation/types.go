@@ -1,51 +1,49 @@
 package conversation
 
-// 重新导出 voicechain 的类型，方便使用
 import "voicebot/pkg/voicechain"
 
-// TurnState 轮次状态
-type TurnState = voicechain.TurnState
+// ========== 公共类型（跨包使用）==========
 
-// AgentPhase Agent 阶段
-type AgentPhase = voicechain.AgentPhase
+// Event 统一事件
+type Event = voicechain.Event
 
-// AudioEventType 音频事件类型
-type AudioEventType = voicechain.AudioEventType
+// ========== 内部类型 ==========
 
-// ConversationEvent 对话事件类型
-type ConversationEvent = voicechain.ConversationEvent
+// AudioEvent 音频事件（输入）
+type AudioEvent struct {
+	Type string // VADStart, VADStop, ASRPartial, ASRFinal
+	Text string
+}
 
-// AgentCommand 命令
-type AgentCommand = voicechain.AgentCommand
+// AgentCommand 命令（输出）- 使用字符串类型
+type AgentCommand string
 
-// AudioEvent 音频事件
-type AudioEvent = voicechain.AudioEvent
-
-// ConversationState 对话状态
-type ConversationState = voicechain.ConversationState
-
-// 常量别名
 const (
-	UserTurn       = voicechain.UserTurn
-	AgentTurn      = voicechain.AgentTurn
-	AgentIdle      = voicechain.AgentIdle
-	AgentProcessing = voicechain.AgentProcessing
-	AgentSpeaking  = voicechain.AgentSpeaking
-
-	VADStart   = voicechain.VADStart
-	VADStop    = voicechain.VADStop
-	ASRPartial = voicechain.ASRPartial
-	ASRFinal   = voicechain.ASRFinal
-
-	EventIgnore      = voicechain.EventIgnore
-	EventBackchannel = voicechain.EventBackchannel
-	EventInterrupt   = voicechain.EventInterrupt
-	EventNewTurn     = voicechain.EventNewTurn
-
-	CmdNone          = voicechain.CmdNone
-	CmdStartAgent    = voicechain.CmdStartAgent
-	CmdStopPlayback  = voicechain.CmdStopPlayback
-	CmdCancelAgent   = voicechain.CmdCancelAgent
-	CmdCommitAgent   = voicechain.CmdCommitAgent
-	CmdPausePlayback = voicechain.CmdPausePlayback
+	CmdNone                AgentCommand = ""                       // 无动作
+	CmdInvokeAgentGenerate AgentCommand = AgentCommand(voicechain.CmdInvokeAgentGenerate)
+	CmdCancelAgentGenerate AgentCommand = AgentCommand(voicechain.CmdCancelAgentGenerate)
+	CmdStopAgentPlayback   AgentCommand = AgentCommand(voicechain.CmdStopAgentPlayback)
+	CmdPauseAgentPlayback  AgentCommand = AgentCommand(voicechain.CmdPauseAgentPlayback)
 )
+
+func (c AgentCommand) String() string {
+	return string(c)
+}
+
+// ========== 事件类型常量 ==========
+
+const (
+	// Audio events
+	VADStart   = voicechain.StateVADSpeaking
+	VADStop    = voicechain.StateVADSilence
+	ASRPartial = voicechain.StateASRPartial
+	ASRFinal   = voicechain.StateASRFinal
+)
+
+// ========== 辅助函数 ==========
+
+// IsCommand 判断是否为命令事件
+var IsCommand = voicechain.IsCommand
+
+// IsState 判断是否为状态事件
+var IsState = voicechain.IsState

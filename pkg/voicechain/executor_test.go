@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestExecutorHandleState(t *testing.T) {
+func TestExecutorHandleEvent(t *testing.T) {
 	exec := NewExecutor[int](3)
 	session := NewSession()
 
@@ -25,12 +25,12 @@ func TestExecutorHandleState(t *testing.T) {
 	}
 
 	// Test StateSessionBegin
-	exec.HandleState(session, StateEvent{State: StateSessionBegin})
+	exec.HandleEvent(session, Event{Type: StateSessionBegin})
 	assert.True(t, beginCalled)
 	assert.NotNil(t, exec.reqChan)
 
 	// Test StateSessionEnd
-	exec.HandleState(session, StateEvent{State: StateSessionEnd})
+	exec.HandleEvent(session, Event{Type: StateSessionEnd})
 	assert.True(t, endCalled)
 }
 
@@ -53,7 +53,7 @@ func TestExecutorHandleFrame(t *testing.T) {
 	}
 
 	// Initialize the executor
-	exec.HandleState(session, StateEvent{State: StateSessionBegin})
+	exec.HandleEvent(session, Event{Type: StateSessionBegin})
 
 	// Handle frame synchronously
 	exec.Async = false
@@ -80,7 +80,7 @@ func TestExecutorAsync(t *testing.T) {
 	}
 
 	// Initialize and start async executor
-	exec.HandleState(session, StateEvent{State: StateSessionBegin})
+	exec.HandleEvent(session, Event{Type: StateSessionBegin})
 
 	// Send frame
 	exec.HandleFrame(session, &AudioFrame{Payload: []byte{1, 2, 3}})
@@ -92,7 +92,7 @@ func TestExecutorAsync(t *testing.T) {
 		assert.Fail(t, "timeout waiting for execution")
 	}
 
-	exec.HandleState(session, StateEvent{State: StateSessionEnd})
+	exec.HandleEvent(session, Event{Type: StateSessionEnd})
 }
 
 func TestExecutorInterrupt(t *testing.T) {
@@ -103,7 +103,7 @@ func TestExecutorInterrupt(t *testing.T) {
 	defer cancel()
 
 	// Initialize
-	exec.HandleState(session, StateEvent{State: StateSessionBegin})
+	exec.HandleEvent(session, Event{Type: StateSessionBegin})
 
 	// Create a context that we can cancel
 	exec.currentContext, exec.cancelFunc = context.WithCancel(ctx)

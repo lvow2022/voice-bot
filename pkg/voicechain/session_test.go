@@ -10,7 +10,7 @@ func TestSessionCreate(t *testing.T) {
 	session := NewSession()
 	assert.NotNil(t, session)
 	assert.NotEmpty(t, session.ID)
-	assert.Empty(t, session.stateHandles)
+	assert.Empty(t, session.eventHandles)
 	assert.Empty(t, session.errors)
 	assert.Nil(t, session.encoder)
 	assert.Nil(t, session.decoder)
@@ -109,11 +109,11 @@ func TestSessionOn(t *testing.T) {
 	session := NewSession()
 
 	called := false
-	session.On("custom_state", func(event StateEvent) {
+	session.On("custom_event", func(event Event) {
 		called = true
 	})
 
-	assert.Len(t, session.stateHandles["custom_state"], 1)
+	assert.Len(t, session.eventHandles["custom_event"], 1)
 	assert.False(t, called) // Not called yet, just registered
 }
 

@@ -35,16 +35,16 @@ func TestPipelineHandlerCauseError(t *testing.T) {
 	assert.True(t, called)
 }
 
-func TestPipelineHandlerEmitState(t *testing.T) {
+func TestPipelineHandlerEmitEvent(t *testing.T) {
 	session := NewSession()
 	handler := &PipelineHandler{s: session}
 
 	called := false
-	session.On("test_state", func(event StateEvent) {
+	session.On("test_state", func(event Event) {
 		called = true
 	})
 
-	handler.EmitState(handler, "test_state")
+	handler.EmitEvent(handler, Event{Type: "test_state"})
 	assert.True(t, called)
 }
 

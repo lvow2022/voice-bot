@@ -132,22 +132,22 @@ func (c *BackchannelChecker) CheckInput(text string, speechDur, vadGap time.Dura
 	return BackchannelNewTurn
 }
 
-// Check 从 AudioEvent 判断 ConversationEvent
+// Check 从 AudioEvent 判断 Semantic
 // 简化版：仅使用文本判断
-func (c *BackchannelChecker) Check(event AudioEvent) ConversationEvent {
+func (c *BackchannelChecker) Check(event AudioEvent) Semantic {
 	if event.Type != ASRFinal {
-		return EventIgnore
+		return SemanticIgnore
 	}
 
 	switch c.CheckInput(event.Text, 0, 0) {
 	case BackchannelACK:
-		return EventBackchannel
+		return SemanticBackchannel
 	case BackchannelInterrupt:
-		return EventInterrupt
+		return SemanticInterrupt
 	case BackchannelNewTurn:
-		return EventNewTurn
+		return SemanticNewTurn
 	default:
-		return EventIgnore
+		return SemanticIgnore
 	}
 }
 

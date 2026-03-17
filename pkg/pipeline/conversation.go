@@ -2,14 +2,13 @@ package pipeline
 
 import (
 	"context"
-	"time"
 
 	"voicebot/pkg/conversation"
 	"voicebot/pkg/voicechain"
 )
 
 // ConversationPipeline 将 ConversationManager 包装为 voicechain pipeline
-// 基于 Executor 实现，处理 ASR 事件帧，输出 CommandFrame
+// 基于 Executor 实现，处理 ASR 事件帧，通过 Event 广播命令
 type ConversationPipeline struct {
 	manager     *conversation.ConversationManager
 	executor    voicechain.Executor[conversationRequest]
@@ -20,7 +19,7 @@ type ConversationPipeline struct {
 type conversationRequest struct {
 	event    conversation.AudioEvent
 	isSystem bool
-	sysType  voicechain.SystemEventType
+	sysType  string
 }
 
 // ConversationOption 配置选项
@@ -89,16 +88,6 @@ func (p *ConversationPipeline) GetManager() *conversation.ConversationManager {
 
 // buildRequest 构建帧请求（同步，在主线程中执行）
 func (p *ConversationPipeline) buildRequest(_ voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[conversationRequest], error) {
-	// 处理系统事件帧
-	if sysEvent, ok := frame.(*voicechain.SystemEvent); ok {
-		return &voicechain.FrameRequest[conversationRequest]{
-			Req: conversationRequest{
-				isSystem: true,
-				sysType:  sysEvent.Type,
-			},
-		}, nil
-	}
-
 	// 处理音频事件帧
 	event, ok := p.eventMapper(frame)
 	if !ok {
@@ -115,28 +104,13 @@ func (p *ConversationPipeline) buildRequest(_ voicechain.SessionHandler, frame v
 
 // execute 执行处理逻辑（异步，在 goroutine 中执行）
 func (p *ConversationPipeline) execute(_ context.Context, h voicechain.SessionHandler, req voicechain.FrameRequest[conversationRequest]) error {
-	if req.Req.isSystem {
-		// 处理系统事件
-		cmd := p.manager.HandleSystemEvent(voicechain.SystemEvent{
-			Type:    req.Req.sysType,
-			Payload: nil,
-		})
-		if cmd != conversation.CmdNone {
-			h.EmitFrame(p, &voicechain.CommandFrame{
-				Command:   cmd,
-				Timestamp: time.Now(),
-			})
-		}
-		return nil
-	}
-
 	// 处理音频事件
 	cmd := p.manager.HandleAudioEvent(req.Req.event)
 	if cmd != conversation.CmdNone {
-		h.EmitFrame(p, &voicechain.CommandFrame{
-			Command:   cmd,
-			Text:      req.Req.event.Text,
-			Timestamp: time.Now(),
+		// 通过 EmitEvent 广播命令事件
+		h.EmitEvent(p, voicechain.Event{
+			Type:    string(cmd),
+			Payload: req.Req.event.Text,
 		})
 	}
 

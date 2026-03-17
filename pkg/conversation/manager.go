@@ -10,13 +10,13 @@ import (
 //
 // ConversationManager 的核心职责：
 //  1. 管理 Turn / Phase 状态
-//     • UserTurn / AgentTurn
-//     • AgentProcessing / AgentSpeaking
+//     • TurnUser / TurnAgent
+//     • PhaseGenerating / PhaseSpeaking
 //  2. 处理用户输入事件
 //     • VAD / ASR partial / ASR final
 //     • 判断 backchannel / interrupt / new turn
 //  3. 生成控制命令
-//     • CmdStartAgent / CmdPausePlayback / CmdStopPlayback / CmdCancelAgent / CmdCommitAgent
+//     • CmdInvokeAgent / CmdPausePlayback / CmdStopPlayback / CmdCancelAgent
 //
 // ConversationManager 内部模块职责：
 //   - TurnManager: 管理 Turn 和 Phase 状态
@@ -26,14 +26,14 @@ import (
 //   - ContextManager: 维护历史上下文 / 已播放内容
 type ConversationManager struct {
 	// 核心组件
-	turnManager       *TurnManager
+	turnManager        *TurnManager
 	backchannelChecker *BackchannelChecker
-	commandGenerator  *CommandGenerator
-	eventQueue        *EventQueue
-	contextManager    *ContextManager
+	commandGenerator   *CommandGenerator
+	eventQueue         *EventQueue
+	contextManager     *ContextManager
 
 	// 可选的状态变更回调
-	onStateChange func(oldState, newState ConversationState)
+	onStateChange func(oldState, newState State)
 	onCommand     func(cmd AgentCommand)
 
 	// 日志
@@ -51,7 +51,7 @@ func WithLogger(logger *slog.Logger) Option {
 }
 
 // WithOnStateChange 设置状态变更回调
-func WithOnStateChange(callback func(oldState, newState ConversationState)) Option {
+func WithOnStateChange(callback func(oldState, newState State)) Option {
 	return func(m *ConversationManager) {
 		m.onStateChange = callback
 	}
@@ -96,7 +96,7 @@ func NewConversationManager(opts ...Option) *ConversationManager {
 // 实现 EventHandler 接口
 func (m *ConversationManager) HandleAudioEvent(event AudioEvent) AgentCommand {
 	m.logger.Debug("handle audio event",
-		"type", event.Type.String(),
+		"type", event.Type,
 		"text", event.Text,
 	)
 
@@ -122,19 +122,19 @@ func (m *ConversationManager) HandleAudioEvent(event AudioEvent) AgentCommand {
 
 // HandleSystemEvent 处理系统事件
 // 实现 EventHandler 接口
-func (m *ConversationManager) HandleSystemEvent(event voicechain.SystemEvent) AgentCommand {
+func (m *ConversationManager) HandleSystemEvent(event Event) AgentCommand {
 	m.logger.Debug("handle system event", "type", event.Type)
 
 	var cmd AgentCommand
 
 	switch event.Type {
-	case voicechain.SystemEventAgentStart:
+	case voicechain.StateAgentGenerating:
 		m.turnManager.HandleAgentStart()
 		m.notifyStateChange()
-	case voicechain.SystemEventAgentSpeak:
+	case voicechain.StateAgentSpeaking:
 		m.turnManager.HandleAgentSpeak()
 		m.notifyStateChange()
-	case voicechain.SystemEventPlaybackFinished:
+	case voicechain.StatePlaybackDone:
 		cmd = m.handlePlaybackFinished()
 	}
 
@@ -158,7 +158,7 @@ func (m *ConversationManager) handleVADStart(_ AudioEvent) AgentCommand {
 	// 如果 Agent 正在说话，可能需要暂停
 	if m.turnManager.IsAgentSpeaking() {
 		cmd := m.commandGenerator.GenerateForVAD(state, VADStart)
-		if cmd == CmdPausePlayback {
+		if cmd == CmdPauseAgentPlayback {
 			m.logger.Info("pause playback on VAD start")
 		}
 		return cmd
@@ -195,7 +195,7 @@ func (m *ConversationManager) handleASRFinal(event AudioEvent) AgentCommand {
 	)
 
 	// 记录用户消息到上下文
-	if convEvent == EventNewTurn || convEvent == EventInterrupt {
+	if convEvent == SemanticNewTurn || convEvent == SemanticInterrupt {
 		m.contextManager.AddUserMessage(event.Text)
 	}
 
@@ -223,12 +223,12 @@ func (m *ConversationManager) handlePlaybackFinished() AgentCommand {
 	m.turnManager.HandlePlaybackFinished()
 	m.notifyStateChangeWith(oldState)
 
-	// 提交已播放内容到上下文
+	// 提交已播放内容到上下文（内部处理，不作为命令返回）
 	m.contextManager.CommitPlayedContent()
 
 	m.logger.Info("playback finished, turn to user")
 
-	return CmdCommitAgent
+	return CmdNone
 }
 
 // notifyStateChange 通知状态变更
@@ -237,7 +237,7 @@ func (m *ConversationManager) notifyStateChange() {
 }
 
 // notifyStateChangeWith 通知状态变更（带旧状态）
-func (m *ConversationManager) notifyStateChangeWith(oldState ConversationState) {
+func (m *ConversationManager) notifyStateChangeWith(oldState State) {
 	newState := m.turnManager.GetState()
 	if m.onStateChange != nil && oldState != newState {
 		m.onStateChange(oldState, newState)
@@ -252,7 +252,7 @@ func (m *ConversationManager) PushEvent(event AudioEvent) {
 }
 
 // PushSystemEvent 推入系统事件（异步）
-func (m *ConversationManager) PushSystemEvent(event voicechain.SystemEvent) {
+func (m *ConversationManager) PushSystemEvent(event Event) {
 	m.eventQueue.PushSystem(event)
 }
 
@@ -262,12 +262,12 @@ func (m *ConversationManager) PushPlaybackDone() {
 }
 
 // GetState 获取当前状态
-func (m *ConversationManager) GetState() ConversationState {
+func (m *ConversationManager) GetState() State {
 	return m.turnManager.GetState()
 }
 
 // SetState 设置状态（外部强制设置）
-func (m *ConversationManager) SetState(state ConversationState) {
+func (m *ConversationManager) SetState(state State) {
 	oldState := m.turnManager.GetState()
 	m.turnManager.SetState(state)
 	m.notifyStateChangeWith(oldState)

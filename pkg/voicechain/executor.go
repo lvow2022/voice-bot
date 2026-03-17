@@ -17,7 +17,7 @@ type FrameRequest[R any] struct {
 type Executor[T any] struct {
 	OnBegin        func(h SessionHandler) error
 	OnEnd          func(h SessionHandler) error
-	OnState        func(h SessionHandler, event StateEvent) error
+	OnEvent        func(h SessionHandler, event Event) error
 	OnBuildRequest func(h SessionHandler, frame Frame) (*FrameRequest[T], error)
 	OnExecute      func(ctx context.Context, h SessionHandler, req FrameRequest[T]) error
 
@@ -64,13 +64,13 @@ func (m *Executor[T]) HandleSessionData(h SessionHandler, data SessionData) {
 	case SessionDataFrame:
 		m.HandleFrame(h, data.Frame)
 	case SessionDataState:
-		m.HandleState(h, data.State)
+		m.HandleEvent(h, data.Event)
 	}
 }
 
-// HandleState 处理状态事件
-func (m *Executor[T]) HandleState(h SessionHandler, event StateEvent) {
-	switch event.State {
+// HandleEvent 处理事件
+func (m *Executor[T]) HandleEvent(h SessionHandler, event Event) {
+	switch event.Type {
 	case StateSessionBegin:
 		if m.Async {
 			reqChanSize := m.ReqChanSize
@@ -94,8 +94,8 @@ func (m *Executor[T]) HandleState(h SessionHandler, event StateEvent) {
 			}
 		}
 	}
-	if m.OnState != nil {
-		if err := m.OnState(h, event); err != nil {
+	if m.OnEvent != nil {
+		if err := m.OnEvent(h, event); err != nil {
 			h.CauseError(m, err)
 		}
 	}

@@ -21,19 +21,16 @@ type EventQueue struct {
 // queueEvent 内部队列事件
 type queueEvent struct {
 	audioEvent   *AudioEvent
-	systemEvent  *voicechain.SystemEvent
+	systemEvent  *voicechain.Event
 	playbackDone bool
 }
 
 // EventHandler 事件处理器接口
 type EventHandler interface {
 	HandleAudioEvent(event AudioEvent) AgentCommand
-	HandleSystemEvent(event voicechain.SystemEvent) AgentCommand
+	HandleSystemEvent(event voicechain.Event) AgentCommand
 	HandlePlaybackFinished() AgentCommand
 }
-
-// SystemEvent 已移至 voicechain 包
-// 使用 voicechain.SystemEvent 替代
 
 // NewEventQueue 创建新的事件队列
 func NewEventQueue() *EventQueue {
@@ -63,7 +60,7 @@ func (q *EventQueue) PushAudio(event AudioEvent) {
 }
 
 // PushSystem 推入系统事件
-func (q *EventQueue) PushSystem(event voicechain.SystemEvent) {
+func (q *EventQueue) PushSystem(event voicechain.Event) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 

@@ -36,8 +36,8 @@ func (p *PipelineHandler) CauseError(sender any, err error) {
 	p.s.CauseError(sender, err)
 }
 
-func (p *PipelineHandler) EmitState(sender any, state string, params ...any) {
-	p.s.EmitState(sender, state, params...)
+func (p *PipelineHandler) EmitEvent(sender any, event Event) {
+	p.s.EmitEvent(sender, event)
 }
 
 func (p *PipelineHandler) EmitFrame(sender any, frame Frame) {
