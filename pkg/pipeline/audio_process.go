@@ -18,11 +18,6 @@ type AudioProcessOptions struct {
 	Audio audio.AudioProcessOption // 音频处理配置
 }
 
-// asrRequest ASR 请求
-type asrRequest struct {
-	data []byte
-}
-
 // audioProcessManager 音频处理管理器
 type audioProcessManager struct {
 	opts AudioProcessOptions
@@ -44,7 +39,7 @@ type audioProcessManager struct {
 
 // NewAudioProcessPipeline 创建音频处理 pipeline
 func NewAudioProcessPipeline(opts AudioProcessOptions) voicechain.HandleFunc {
-	executor := voicechain.NewExecutor[asrRequest](128)
+	executor := voicechain.NewExecutor[[]byte](128)
 	executor.Async = true
 
 	mgr := &audioProcessManager{opts: opts}
@@ -57,11 +52,11 @@ func NewAudioProcessPipeline(opts AudioProcessOptions) voicechain.HandleFunc {
 		return mgr.OnEnd(h)
 	}
 
-	executor.OnBuildRequest = func(h voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[asrRequest], error) {
+	executor.OnBuildRequest = func(h voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[[]byte], error) {
 		return mgr.OnBuildRequest(h, frame)
 	}
 
-	executor.OnExecute = func(ctx context.Context, h voicechain.SessionHandler, req voicechain.FrameRequest[asrRequest]) error {
+	executor.OnExecute = func(ctx context.Context, h voicechain.SessionHandler, req voicechain.FrameRequest[[]byte]) error {
 		return mgr.OnExecute(ctx, h, req)
 	}
 
@@ -99,7 +94,7 @@ func (m *audioProcessManager) OnBegin(h voicechain.SessionHandler) error {
 }
 
 // OnBuildRequest 构建请求（VAD 过滤）
-func (m *audioProcessManager) OnBuildRequest(h voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[asrRequest], error) {
+func (m *audioProcessManager) OnBuildRequest(h voicechain.SessionHandler, frame voicechain.Frame) (*voicechain.FrameRequest[[]byte], error) {
 	// 获取音频数据
 	var payload []byte
 	switch f := frame.(type) {
@@ -133,19 +128,19 @@ func (m *audioProcessManager) OnBuildRequest(h voicechain.SessionHandler, frame 
 		return nil, nil // 静音，跳过
 	}
 
-	return &voicechain.FrameRequest[asrRequest]{
-		Req: asrRequest{data: processed},
+	return &voicechain.FrameRequest[[]byte]{
+		Req: processed,
 	}, nil
 }
 
 // OnExecute 发送音频到 ASR
-func (m *audioProcessManager) OnExecute(_ context.Context, _ voicechain.SessionHandler, req voicechain.FrameRequest[asrRequest]) error {
+func (m *audioProcessManager) OnExecute(_ context.Context, _ voicechain.SessionHandler, req voicechain.FrameRequest[[]byte]) error {
 	if m.asrSession == nil {
 		return nil
 	}
 
 	return m.asrSession.Send(types.AudioFrame{
-		Data:      req.Req.data,
+		Data:      req.Req,
 		Timestamp: time.Now().UnixNano(),
 	})
 }
