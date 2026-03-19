@@ -3,7 +3,29 @@ package bus
 
 import (
 	"context"
+	"errors"
 )
+
+// ErrBusClosed is returned when the bus is closed.
+var ErrBusClosed = errors.New("bus closed")
+
+// Peer represents a message sender.
+type Peer struct {
+	ID       string
+	Name     string
+	Username string
+	Kind     string // "user", "bot", etc.
+}
+
+// SenderInfo contains information about the message sender.
+type SenderInfo struct {
+	ID       string
+	Name     string
+	Username string
+}
+
+// Metadata contains additional message metadata.
+type Metadata map[string]any
 
 // InboundMessage represents an incoming message.
 type InboundMessage struct {
@@ -14,14 +36,20 @@ type InboundMessage struct {
 	Media       []string
 	MediaScope  string
 	ReplyTo     string
+	MessageID   string      // ID of the original message (for replies)
+	SessionKey  string      // Optional session key override
+	Peer        *Peer       // Sender peer info
+	Sender      *SenderInfo // Sender info
+	Metadata    Metadata    // Additional metadata
 }
 
 // OutboundMessage represents an outgoing message.
 type OutboundMessage struct {
-	Channel   string
-	ChatID    string
-	Content   string
-	ReplyTo   string
+	Channel          string
+	ChatID           string
+	Content          string
+	ReplyTo          string
+	ReplyToMessageID string // For compatibility
 }
 
 // OutboundMediaMessage represents an outgoing message with media.
@@ -37,6 +65,7 @@ type MediaPart struct {
 	Data        []byte
 	Filename    string
 	ContentType string
+	Ref         string // Reference to stored media
 }
 
 // MessageBus is a minimal message bus implementation.
@@ -97,4 +126,15 @@ func (b *MessageBus) ConsumeOutbound(ctx context.Context) (OutboundMessage, bool
 	case <-ctx.Done():
 		return OutboundMessage{}, false
 	}
+}
+
+// SubscribeOutbound returns a channel for outbound messages and a cancel function.
+func (b *MessageBus) SubscribeOutbound(ctx context.Context) (<-chan OutboundMessage, func()) {
+	return b.outbound, func() {}
+}
+
+// Close closes the message bus.
+func (b *MessageBus) Close() {
+	close(b.inbound)
+	close(b.outbound)
 }

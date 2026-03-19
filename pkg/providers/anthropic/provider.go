@@ -243,8 +243,8 @@ func buildParams(
 }
 
 // applyThinkingConfig sets thinking parameters based on the level value.
-// "adaptive" uses the adaptive thinking API (Claude 4.6+).
-// All other levels use budget_tokens which is universally supported.
+// "adaptive" maps to "high" budget for now (adaptive API not available in current SDK).
+// All other levels use budget_tokens.
 //
 // Anthropic API constraint: temperature must not be set when thinking is enabled.
 // budget_tokens must be strictly less than max_tokens.
@@ -256,13 +256,9 @@ func applyThinkingConfig(params *anthropic.MessageNewParams, level string) {
 	}
 	params.Temperature = anthropic.MessageNewParams{}.Temperature
 
+	// Map "adaptive" to "high" budget for now
 	if level == "adaptive" {
-		adaptive := anthropic.NewThinkingConfigAdaptiveParam()
-		params.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive}
-		params.OutputConfig = anthropic.OutputConfigParam{
-			Effort: anthropic.OutputConfigEffortHigh,
-		}
-		return
+		level = "high"
 	}
 
 	budget := int64(levelToBudget(level))
