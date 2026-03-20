@@ -11,11 +11,13 @@ import (
 	"voicebot/pkg/asr/types"
 	"voicebot/pkg/audio"
 	"voicebot/pkg/voicechain"
+	"voicebot/pkg/websocket"
 )
 
 // AudioProcessOptions 音频处理 pipeline 配置选项
 type AudioProcessOptions struct {
-	ASR       types.ClientConfig      // ASR 客户端配置
+	ASR       types.ProviderConfig    // ASR Provider 配置
+	Session   types.SessionOptions    // ASR 会话配置
 	VADType   audio.VADType           // VAD 类型
 	VADOption audio.VADDetectorOption // VAD 配置
 }
@@ -25,9 +27,8 @@ type audioProcesser struct {
 	opts AudioProcessOptions
 
 	// 运行时组件
-	vad        audio.VADDetector
-	asrClient  *asr.AsrClient
-	asrSession *asr.AsrSession
+	vad     audio.VADDetector
+	stream  *websocket.WSStream
 
 	// VAD 状态
 	speaking atomic.Bool
@@ -75,22 +76,20 @@ func (m *audioProcesser) OnBegin(h voicechain.SessionHandler) error {
 	}
 	m.vad = vad
 
-	// 2. 创建 ASR 客户端
-	client, err := asr.NewClient(m.opts.ASR)
+	// 2. 创建 ASR Provider
+	provider, err := asr.CreateProvider(m.opts.ASR)
 	if err != nil {
 		m.vad.Close()
 		return err
 	}
-	m.asrClient = client
 
-	// 3. 创建 ASR session
-	session, err := m.asrClient.NewSession(m.ctx, m.opts.ASR.Session)
+	// 3. 连接并获取 WSStream
+	stream, err := provider.Connect(m.ctx, m.opts.Session)
 	if err != nil {
 		m.vad.Close()
-		_ = m.asrClient.Close()
 		return err
 	}
-	m.asrSession = session
+	m.stream = stream
 
 	// 4. 启动 ASR 结果接收循环
 	m.wg.Add(1)
@@ -134,14 +133,14 @@ func (m *audioProcesser) OnExecute(ctx context.Context, h voicechain.SessionHand
 		return nil // 静音，不发送到 ASR
 	}
 
-	// 发送到 ASR
-	if m.asrSession == nil {
+	// 直接发送到 WSStream
+	if m.stream == nil {
 		return nil
 	}
 
-	return m.asrSession.Send(types.AudioFrame{
-		Data:      req.Req,
-		Timestamp: time.Now().UnixNano(),
+	return m.stream.Send(ctx, types.AsrRequest{
+		Audio:  req.Req,
+		IsLast: false,
 	})
 }
 
@@ -155,8 +154,8 @@ func (m *audioProcesser) OnEnd(_ voicechain.SessionHandler) error {
 	if m.vad != nil {
 		m.vad.Close()
 	}
-	if m.asrClient != nil {
-		_ = m.asrClient.Close()
+	if m.stream != nil {
+		_ = m.stream.Close()
 	}
 
 	slog.Debug("audio process pipeline stopped")
@@ -190,35 +189,47 @@ func (m *audioProcesser) recvLoop(h voicechain.SessionHandler) {
 		select {
 		case <-m.ctx.Done():
 			return
-		default:
-			event, err := m.asrSession.Recv()
-			if err != nil {
-				if m.ctx.Err() != nil {
-					return // 正常关闭
-				}
-				slog.Error("asr recv error", "error", err)
-				return
+		case evt, ok := <-m.stream.Recv():
+			if !ok {
+				return // stream closed
 			}
 
-			if event == nil {
+			// 处理错误类型
+			if err, ok := evt.(error); ok {
+				slog.Error("asr recv error", "error", err)
+				continue
+			}
+
+			// 类型断言
+			asrEvt, ok := evt.(types.AsrEvent)
+			if !ok {
 				continue
 			}
 
 			// 根据事件类型发送状态
-			switch event.Type {
+			switch asrEvt.Type {
 			case types.EventPartial:
-				h.EmitEvent(m, voicechain.Event{Type: voicechain.StateASRPartial, Payload: event.Text})
+				h.EmitEvent(m, voicechain.Event{Type: voicechain.StateASRPartial, Payload: asrEvt.Text})
 			case types.EventFinal:
-				h.EmitEvent(m, voicechain.Event{Type: voicechain.StateASRFinal, Payload: event.Text})
+				h.EmitEvent(m, voicechain.Event{Type: voicechain.StateASRFinal, Payload: asrEvt.Text})
+			case types.EventError:
+				slog.Error("asr error", "error", asrEvt.Err)
 			}
 
 			// 发送帧给下游 pipeline
-			h.EmitFrame(m, &voicechain.TextFrame{
-				Text:          event.Text,
-				IsTranscribed: true,
-				IsPartial:     !event.IsFinal(),
-				IsEnd:         event.IsFinal(),
-			})
+			if asrEvt.Text != "" {
+				h.EmitFrame(m, &voicechain.TextFrame{
+					Text:          asrEvt.Text,
+					IsTranscribed: true,
+					IsPartial:     asrEvt.Type == types.EventPartial,
+					IsEnd:         asrEvt.Type == types.EventFinal,
+				})
+			}
+
+			// Final 事件后结束
+			if asrEvt.Type == types.EventFinal {
+				return
+			}
 		}
 	}
 }

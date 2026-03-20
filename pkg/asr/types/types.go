@@ -59,11 +59,27 @@ const (
 	EventReconnected
 )
 
-// AudioFrame 音频帧
-type AudioFrame struct {
-	Data      []byte
-	Timestamp int64
-	Duration  time.Duration
+func (t AsrEventType) String() string {
+	switch t {
+	case EventPartial:
+		return "partial"
+	case EventFinal:
+		return "final"
+	case EventError:
+		return "error"
+	case EventReconnecting:
+		return "reconnecting"
+	case EventReconnected:
+		return "reconnected"
+	default:
+		return "unknown"
+	}
+}
+
+// AsrRequest ASR 请求
+type AsrRequest struct {
+	Audio  []byte
+	IsLast bool // half-close 标记
 }
 
 // ProviderType provider 类型

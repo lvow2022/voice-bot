@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"sync/atomic"
+
+	"voicebot/pkg/asr/types"
 )
 
 // ============ Constants ============
@@ -48,50 +50,7 @@ const (
 	flagNegativeSeq byte = 0x03
 )
 
-// ============ Request & Event ============
-
-// AsrRequest ASR 请求
-type AsrRequest struct {
-	Audio  []byte
-	IsLast bool // half-close 标记
-}
-
-// AsrEventType ASR 事件类型
-type AsrEventType int
-
-const (
-	AsrEventPartial AsrEventType = iota
-	AsrEventFinal
-	AsrEventError
-)
-
-func (t AsrEventType) String() string {
-	switch t {
-	case AsrEventPartial:
-		return "partial"
-	case AsrEventFinal:
-		return "final"
-	case AsrEventError:
-		return "error"
-	default:
-		return "unknown"
-	}
-}
-
-// AsrEvent ASR 事件
-type AsrEvent struct {
-	Type       AsrEventType
-	Text       string
-	Confidence float64
-	Err        error
-}
-
-// IsFinal 实现 FinalEvent 接口
-func (e AsrEvent) IsFinal() bool {
-	return e.Type == AsrEventFinal
-}
-
-// ============ Protocol Messages ============
+// ============ Protocol Messages (火山引擎协议) ============
 
 // VolcanoRequest 火山引擎 ASR 请求
 type VolcanoRequest struct {
@@ -155,11 +114,11 @@ func NewCodec(cfg Config) *Codec {
 	return &Codec{cfg: cfg}
 }
 
-// Encode 编码请求
+// Encode 编码请求 (types.AsrRequest -> 火山协议)
 func (c *Codec) Encode(req any) ([]byte, error) {
-	asrReq, ok := req.(AsrRequest)
+	asrReq, ok := req.(types.AsrRequest)
 	if !ok {
-		return nil, fmt.Errorf("expected AsrRequest, got %T", req)
+		return nil, fmt.Errorf("expected types.AsrRequest, got %T", req)
 	}
 
 	// Half-close: 发送 last packet
@@ -186,7 +145,7 @@ func (c *Codec) Encode(req any) ([]byte, error) {
 	return msg, nil
 }
 
-// Decode 解码响应
+// Decode 解码响应 (火山协议 -> types.AsrEvent)
 func (c *Codec) Decode(data []byte) (any, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("message too short: %d bytes", len(data))
@@ -214,8 +173,8 @@ func (c *Codec) Decode(data []byte) (any, error) {
 
 	case msgTypeErrorFromServer:
 		if len(data) < 12 {
-			return AsrEvent{
-				Type: AsrEventError,
+			return types.AsrEvent{
+				Type: types.EventError,
 				Err:  fmt.Errorf("error message too short"),
 			}, nil
 		}
@@ -223,8 +182,8 @@ func (c *Codec) Decode(data []byte) (any, error) {
 		errorSize := binary.BigEndian.Uint32(data[8:12])
 		errorMsg := string(data[12 : 12+errorSize])
 
-		return AsrEvent{
-			Type: AsrEventError,
+		return types.AsrEvent{
+			Type: types.EventError,
 			Err:  fmt.Errorf("server error %d: %s", errorCode, errorMsg),
 		}, nil
 
@@ -307,8 +266,8 @@ func (c *Codec) parseServerResponse(data []byte, flag byte) (any, error) {
 	}
 
 	if resp.Code != 0 && resp.Code != 20000000 {
-		return AsrEvent{
-			Type: AsrEventError,
+		return types.AsrEvent{
+			Type: types.EventError,
 			Err:  fmt.Errorf("response error %d: %s", resp.Code, resp.Message),
 		}, nil
 	}
@@ -326,26 +285,26 @@ func (c *Codec) parseServerResponse(data []byte, flag byte) (any, error) {
 				continue
 			}
 
-			evt := AsrEvent{
-				Type: AsrEventPartial,
+			evt := types.AsrEvent{
+				Type: types.EventPartial,
 				Text: utt.Text,
 			}
 
 			if utt.Definite {
-				evt.Type = AsrEventFinal
+				evt.Type = types.EventFinal
 				return evt, nil
 			}
 
 			return evt, nil
 		}
 	} else if resp.Result.Text != "" {
-		evt := AsrEvent{
-			Type: AsrEventPartial,
+		evt := types.AsrEvent{
+			Type: types.EventPartial,
 			Text: resp.Result.Text,
 		}
 
 		if isFinal {
-			evt.Type = AsrEventFinal
+			evt.Type = types.EventFinal
 		}
 
 		return evt, nil

@@ -14,7 +14,7 @@ type Config struct {
 	Options    map[string]any
 }
 
-// ParseConfig 从 ProviderConfig 解析配置
+// ParseConfig 解析配置
 func ParseConfig(cfg types.ProviderConfig) Config {
 	return Config{
 		AppID:      cfg.AppID,

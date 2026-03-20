@@ -22,33 +22,61 @@ func TestASRVolcano(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	client, err := asr.NewClient(types.ClientConfig{
-		Primary: types.ProviderConfig{
-			Name:       "volcano",
-			APIKey:     apiKey,
-			AppID:      appID,
-			ResourceID: resourceID,
-			SampleRate: 16000,
-			Format:     "pcm",
-		},
-		Session: types.DefaultSessionOptions(),
+	// 1. 创建 Provider
+	provider, err := asr.CreateProvider(types.ProviderConfig{
+		Name:       "volcano",
+		APIKey:     apiKey,
+		AppID:      appID,
+		ResourceID: resourceID,
+		SampleRate: 16000,
+		Format:     "pcm",
 	})
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+		t.Fatalf("CreateProvider: %v", err)
 	}
-	defer client.Close()
 
-	session, err := client.NewSession(ctx, types.SessionOptions{
+	// 2. 连接获取 WSStream
+	stream, err := provider.Connect(ctx, types.SessionOptions{
 		SampleRate: 16000,
 		Format:     "pcm",
 		Language:   "zh-CN",
 	})
 	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+		t.Fatalf("Connect: %v", err)
 	}
-	defer session.Close()
+	defer stream.Close()
 
-	// 发送测试音频
+	// 3. 启动接收协程
+	done := make(chan struct{})
+	var texts []string
+	go func() {
+		defer close(done)
+		for evt := range stream.Recv() {
+			// 处理错误
+			if err, ok := evt.(error); ok {
+				t.Logf("Recv error: %v", err)
+				return
+			}
+
+			// 类型断言
+			asrEvt, ok := evt.(types.AsrEvent)
+			if !ok {
+				continue
+			}
+
+			t.Logf("Event: type=%s text=%q isFinal=%v", asrEvt.Type, asrEvt.Text, asrEvt.IsFinal())
+
+			if asrEvt.Text != "" {
+				texts = append(texts, asrEvt.Text)
+			}
+
+			if asrEvt.Type == types.EventFinal || asrEvt.Type == types.EventError {
+				return
+			}
+		}
+	}()
+
+	// 4. 发送测试音频
 	audioData, err := os.ReadFile("../../../testdata/s16_16k_1c_zh.wav")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -66,8 +94,9 @@ func TestASRVolcano(t *testing.T) {
 		}
 
 		isLast := end >= len(pcmData)
-		if err := session.Send(types.AudioFrame{
-			Data: pcmData[i:end],
+		if err := stream.Send(ctx, types.AsrRequest{
+			Audio:  pcmData[i:end],
+			IsLast: isLast,
 		}); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
@@ -79,25 +108,8 @@ func TestASRVolcano(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// 接收识别结果
-	var texts []string
-	for {
-		event, err := session.Recv()
-		if err != nil {
-			t.Logf("Recv error: %v", err)
-			break
-		}
-
-		t.Logf("Event: type=%d text=%q isFinal=%v", event.Type, event.Text, event.IsFinal())
-
-		if event.Text != "" {
-			texts = append(texts, event.Text)
-		}
-
-		if event.Type == types.EventFinal || event.Type == types.EventError {
-			break
-		}
-	}
+	// 5. 等待接收完成
+	<-done
 
 	if len(texts) == 0 {
 		t.Error("No text recognized")
