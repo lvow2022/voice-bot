@@ -8,20 +8,16 @@ import (
 	"fmt"
 	"io"
 	"sync/atomic"
-
-	"voicebot/pkg/wsstream"
 )
 
 // ============ Constants ============
 
 const volcanoWSURL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 
-// ============ Protocol ============
-
 // Protocol constants
 const (
 	protocolVersion = 0x01
-	headerSize     = 0x01
+	headerSize      = 0x01
 )
 
 // Message types
@@ -46,13 +42,13 @@ const (
 
 // Message flags
 const (
-	flagNoSequence byte = 0x00
+	flagNoSequence  byte = 0x00
 	flagPositiveSeq byte = 0x01
 	flagLastPacket  byte = 0x02
 	flagNegativeSeq byte = 0x03
 )
 
-// ============ Request ============
+// ============ Request & Event ============
 
 // AsrRequest ASR 请求
 type AsrRequest struct {
@@ -60,12 +56,47 @@ type AsrRequest struct {
 	IsLast bool // half-close 标记
 }
 
+// AsrEventType ASR 事件类型
+type AsrEventType int
+
+const (
+	AsrEventPartial AsrEventType = iota
+	AsrEventFinal
+	AsrEventError
+)
+
+func (t AsrEventType) String() string {
+	switch t {
+	case AsrEventPartial:
+		return "partial"
+	case AsrEventFinal:
+		return "final"
+	case AsrEventError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// AsrEvent ASR 事件
+type AsrEvent struct {
+	Type       AsrEventType
+	Text       string
+	Confidence float64
+	Err        error
+}
+
+// IsFinal 实现 FinalEvent 接口
+func (e AsrEvent) IsFinal() bool {
+	return e.Type == AsrEventFinal
+}
+
 // ============ Protocol Messages ============
 
 // VolcanoRequest 火山引擎 ASR 请求
 type VolcanoRequest struct {
-	User    VolcanoUser    `json:"user"`
-	Audio   VolcanoAudio   `json:"audio"`
+	User    VolcanoUser   `json:"user"`
+	Audio   VolcanoAudio  `json:"audio"`
 	Request VolcanoReqCfg `json:"request"`
 }
 
@@ -93,22 +124,22 @@ type VolcanoReqCfg struct {
 
 // VolcanoResponse 火山引擎 ASR 响应
 type VolcanoResponse struct {
-	Code      int             `json:"code"`
-	Message   string          `json:"message"`
-	IsFinal   bool            `json:"is_final"`
-	Result    *VolcanoResult  `json:"result,omitempty"`
+	Code    int            `json:"code"`
+	Message string         `json:"message"`
+	IsFinal bool           `json:"is_final"`
+	Result  *VolcanoResult `json:"result,omitempty"`
 }
 
 // VolcanoResult 识别结果
 type VolcanoResult struct {
-	Text       string           `json:"text"`
+	Text       string             `json:"text"`
 	Utterances []VolcanoUtterance `json:"utterances,omitempty"`
 }
 
 // VolcanoUtterance 话语片段
 type VolcanoUtterance struct {
-	Text     string  `json:"text"`
-	Definite bool    `json:"definite"`
+	Text     string `json:"text"`
+	Definite bool   `json:"definite"`
 }
 
 // ============ Codec ============
@@ -125,14 +156,19 @@ func NewCodec(cfg Config) *Codec {
 }
 
 // Encode 编码请求
-func (c *Codec) Encode(req AsrRequest) ([]byte, error) {
+func (c *Codec) Encode(req any) ([]byte, error) {
+	asrReq, ok := req.(AsrRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected AsrRequest, got %T", req)
+	}
+
 	// Half-close: 发送 last packet
-	if req.IsLast {
-		return c.encodeLastPacket(req)
+	if asrReq.IsLast {
+		return c.encodeLastPacket()
 	}
 
 	// 普通音频包
-	compressed, err := gzipCompress(req.Audio)
+	compressed, err := gzipCompress(asrReq.Audio)
 	if err != nil {
 		return nil, fmt.Errorf("gzip compress: %w", err)
 	}
@@ -151,9 +187,9 @@ func (c *Codec) Encode(req AsrRequest) ([]byte, error) {
 }
 
 // Decode 解码响应
-func (c *Codec) Decode(data []byte) (wsstream.StreamEvent, error) {
+func (c *Codec) Decode(data []byte) (any, error) {
 	if len(data) < 8 {
-		return wsstream.StreamEvent{}, fmt.Errorf("message too short: %d bytes", len(data))
+		return nil, fmt.Errorf("message too short: %d bytes", len(data))
 	}
 
 	header := data[0:4]
@@ -164,33 +200,36 @@ func (c *Codec) Decode(data []byte) (wsstream.StreamEvent, error) {
 	switch msgType {
 	case msgTypeFullServerResponse:
 		if len(data) < 12 {
-			return wsstream.StreamEvent{}, fmt.Errorf("server response too short")
+			return nil, fmt.Errorf("server response too short")
 		}
 		payloadSize := binary.BigEndian.Uint32(data[8:12])
 		payload := data[12 : 12+payloadSize]
 
 		payloadData, err := decompressPayload(payload, compress)
 		if err != nil {
-			return wsstream.StreamEvent{}, err
+			return nil, err
 		}
 
 		return c.parseServerResponse(payloadData, flag)
 
 	case msgTypeErrorFromServer:
 		if len(data) < 12 {
-			return wsstream.StreamEvent{}, fmt.Errorf("error message too short")
+			return AsrEvent{
+				Type: AsrEventError,
+				Err:  fmt.Errorf("error message too short"),
+			}, nil
 		}
 		errorCode := binary.BigEndian.Uint32(data[4:8])
 		errorSize := binary.BigEndian.Uint32(data[8:12])
 		errorMsg := string(data[12 : 12+errorSize])
 
-		return wsstream.StreamEvent{
-			Type: "error",
+		return AsrEvent{
+			Type: AsrEventError,
 			Err:  fmt.Errorf("server error %d: %s", errorCode, errorMsg),
 		}, nil
 
 	default:
-		return wsstream.StreamEvent{}, nil
+		return nil, nil
 	}
 }
 
@@ -261,21 +300,21 @@ func (c *Codec) EncodeFullClientRequest() ([]byte, error) {
 }
 
 // parseServerResponse 解析服务器响应
-func (c *Codec) parseServerResponse(data []byte, flag byte) (wsstream.StreamEvent, error) {
+func (c *Codec) parseServerResponse(data []byte, flag byte) (any, error) {
 	var resp VolcanoResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return wsstream.StreamEvent{}, fmt.Errorf("unmarshal response: %w", err)
+		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if resp.Code != 0 && resp.Code != 20000000 {
-		return wsstream.StreamEvent{
-			Type: "error",
+		return AsrEvent{
+			Type: AsrEventError,
 			Err:  fmt.Errorf("response error %d: %s", resp.Code, resp.Message),
 		}, nil
 	}
 
 	if resp.Result == nil {
-		return wsstream.StreamEvent{}, nil
+		return nil, nil
 	}
 
 	isFinal := flag == flagNegativeSeq || flag == flagLastPacket || resp.IsFinal
@@ -287,32 +326,32 @@ func (c *Codec) parseServerResponse(data []byte, flag byte) (wsstream.StreamEven
 				continue
 			}
 
-			evt := wsstream.StreamEvent{
-				Type:    "delta",
-				Text:    utt.Text,
+			evt := AsrEvent{
+				Type: AsrEventPartial,
+				Text: utt.Text,
 			}
 
 			if utt.Definite {
-				evt.Type = "final"
+				evt.Type = AsrEventFinal
 				return evt, nil
 			}
 
 			return evt, nil
 		}
 	} else if resp.Result.Text != "" {
-		evt := wsstream.StreamEvent{
-			Type:    "delta",
-			Text:    resp.Result.Text,
+		evt := AsrEvent{
+			Type: AsrEventPartial,
+			Text: resp.Result.Text,
 		}
 
 		if isFinal {
-			evt.Type = "final"
+			evt.Type = AsrEventFinal
 		}
 
 		return evt, nil
 	}
 
-	return wsstream.StreamEvent{}, nil
+	return nil, nil
 }
 
 // buildHeader 构建消息头
@@ -326,7 +365,7 @@ func (c *Codec) buildHeader(msgType, flag, serialize, compress byte) []byte {
 }
 
 // encodeLastPacket 编码最后一个音频包
-func (c *Codec) encodeLastPacket(req AsrRequest) ([]byte, error) {
+func (c *Codec) encodeLastPacket() ([]byte, error) {
 	header := c.buildHeader(msgTypeAudioOnlyRequest, flagLastPacket, serializeNone, compressGzip)
 
 	seq := atomic.AddUint32(&c.seqNum, 1)

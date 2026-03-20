@@ -4,8 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-
-	"voicebot/pkg/wsstream"
 )
 
 // ============ Constants ============
@@ -20,12 +18,46 @@ const (
 	EventTaskFailed    = "task_failed"
 )
 
-// ============ Request ============
+// ============ Request & Event ============
 
 // TTSRequest TTS 请求
 type TTSRequest struct {
-	Text string
-	EOF  bool // 标记文本发送完毕（half-close）
+	Text   string
+	IsLast bool // half-close 标记
+}
+
+// TtsEventType TTS 事件类型
+type TtsEventType int
+
+const (
+	TtsEventAudio TtsEventType = iota
+	TtsEventFinal
+	TtsEventError
+)
+
+func (t TtsEventType) String() string {
+	switch t {
+	case TtsEventAudio:
+		return "audio"
+	case TtsEventFinal:
+		return "final"
+	case TtsEventError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// TtsEvent TTS 事件
+type TtsEvent struct {
+	Type  TtsEventType
+	Audio []byte
+	Err   error
+}
+
+// IsFinal 实现 FinalEvent 接口
+func (e TtsEvent) IsFinal() bool {
+	return e.Type == TtsEventFinal
 }
 
 // ============ Protocol Messages ============
@@ -86,10 +118,15 @@ func NewCodec(cfg Config) *Codec {
 	return &Codec{cfg: cfg}
 }
 
-// Encode 编码请求
-func (c *Codec) Encode(req TTSRequest) ([]byte, error) {
+// Encode 编码请求（类型断言）
+func (c *Codec) Encode(req any) ([]byte, error) {
+	ttsReq, ok := req.(TTSRequest)
+	if !ok {
+		return nil, fmt.Errorf("expected TTSRequest, got %T", req)
+	}
+
 	// Half-close: 发送 finish 事件
-	if req.EOF {
+	if ttsReq.IsLast {
 		return json.Marshal(TaskFinishRequest{
 			Event: EventTaskFinish,
 		})
@@ -98,15 +135,15 @@ func (c *Codec) Encode(req TTSRequest) ([]byte, error) {
 	// 普通文本请求
 	return json.Marshal(TaskContinueRequest{
 		Event: EventTaskContinue,
-		Text:  req.Text,
+		Text:  ttsReq.Text,
 	})
 }
 
 // Decode 解码响应
-func (c *Codec) Decode(data []byte) (wsstream.StreamEvent, error) {
+func (c *Codec) Decode(data []byte) (any, error) {
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
-		return wsstream.StreamEvent{}, fmt.Errorf("unmarshal: %w", err)
+		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 
 	switch msg.Event {
@@ -114,46 +151,36 @@ func (c *Codec) Decode(data []byte) (wsstream.StreamEvent, error) {
 		if msg.Data.Audio != "" {
 			audio, err := hex.DecodeString(msg.Data.Audio)
 			if err != nil {
-				return wsstream.StreamEvent{
-					Type: "error",
+				return TtsEvent{
+					Type: TtsEventError,
 					Err:  fmt.Errorf("decode hex audio: %w", err),
 				}, nil
 			}
 
 			if len(audio) == 0 {
-				return wsstream.StreamEvent{}, nil // 忽略空音频
+				return nil, nil // 忽略空音频
 			}
 
-			evt := wsstream.StreamEvent{
-				Type:  "delta",
+			return TtsEvent{
+				Type:  TtsEventAudio,
 				Audio: audio,
-			}
-
-			// 如果是最后一个音频块，发送 final 事件
-			if msg.IsFinal {
-				// 先返回音频，后续会自动结束
-				go func() {
-					// 由 readLoop 处理 final
-				}()
-			}
-
-			return evt, nil
+			}, nil
 		}
 
 	case EventTaskFinished:
-		return wsstream.StreamEvent{
-			Type: "final",
+		return TtsEvent{
+			Type: TtsEventFinal,
 		}, nil
 
 	case EventTaskFailed:
-		return wsstream.StreamEvent{
-			Type: "error",
+		return TtsEvent{
+			Type: TtsEventError,
 			Err:  fmt.Errorf("task failed: %s", msg.BaseResp.StatusMsg),
 		}, nil
 	}
 
 	// 忽略其他事件
-	return wsstream.StreamEvent{}, nil
+	return nil, nil
 }
 
 // MessageType 返回消息类型

@@ -18,7 +18,8 @@ import (
 // Provider Minimax TTS Provider（基于 wsstream）
 type Provider struct {
 	cfg    Config
-	stream *wsstream.WSStream[TTSRequest]
+	codec  *Codec
+	stream *wsstream.WSStream
 }
 
 // NewProvider 创建 Provider
@@ -61,9 +62,11 @@ func (p *Provider) Connect(ctx context.Context, opts types.SessionOptions) error
 		return fmt.Errorf("dial websocket: %w", err)
 	}
 
+	// 创建 codec
+	p.codec = NewCodec(p.cfg)
+
 	// 发送 task_start
-	codec := NewCodec(p.cfg)
-	startData, err := codec.EncodeStart()
+	startData, err := p.codec.EncodeStart()
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("encode start: %w", err)
@@ -75,9 +78,9 @@ func (p *Provider) Connect(ctx context.Context, opts types.SessionOptions) error
 	}
 
 	// 创建流
-	p.stream = wsstream.NewWSStream[TTSRequest](
+	p.stream = wsstream.NewWSStream(
 		wsstream.NewWSConn(conn),
-		codec,
+		p.codec,
 		wsstream.WithSendBufferSize(128),
 		wsstream.WithRecvBufferSize(128),
 	)
@@ -92,8 +95,8 @@ func (p *Provider) SendText(text string, _ map[string]any) error {
 	}
 
 	return p.stream.Send(context.Background(), TTSRequest{
-		Text: text,
-		EOF:  false,
+		Text:   text,
+		IsLast: false,
 	})
 }
 
@@ -114,23 +117,37 @@ func (p *Provider) RecvEvent() (*types.TtsEvent, error) {
 			return nil, fmt.Errorf("stream closed")
 		}
 
+		// 处理错误类型
+		if err, ok := evt.(error); ok {
+			return &types.TtsEvent{
+				Type: types.EventError,
+				Err:  err,
+			}, nil
+		}
+
+		// 类型断言为 TtsEvent
+		ttsEvt, ok := evt.(TtsEvent)
+		if !ok {
+			return nil, nil
+		}
+
 		// 转换为 types.TtsEvent
-		switch evt.Type {
-		case "delta":
+		switch ttsEvt.Type {
+		case TtsEventAudio:
 			return &types.TtsEvent{
 				Type: types.EventAudioChunk,
-				Data: evt.Audio,
+				Data: ttsEvt.Audio,
 			}, nil
 
-		case "final":
+		case TtsEventFinal:
 			return &types.TtsEvent{
 				Type: types.EventCompleted,
 			}, nil
 
-		case "error":
+		case TtsEventError:
 			return &types.TtsEvent{
 				Type: types.EventError,
-				Err:  evt.Err,
+				Err:  ttsEvt.Err,
 			}, nil
 
 		default:
@@ -154,6 +171,6 @@ func (p *Provider) SendEOF() error {
 	}
 
 	return p.stream.Send(context.Background(), TTSRequest{
-		EOF: true,
+		IsLast: true,
 	})
 }

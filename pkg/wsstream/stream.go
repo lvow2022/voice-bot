@@ -12,35 +12,21 @@ import (
 // ============ Errors ============
 
 var (
-	ErrStreamClosed   = errors.New("stream closed")
-	ErrNotConnected   = errors.New("not connected")
-	ErrSendTimeout    = errors.New("send timeout")
-	ErrAlreadyClosed  = errors.New("already closed")
+	ErrStreamClosed  = errors.New("stream closed")
+	ErrNotConnected  = errors.New("not connected")
+	ErrSendTimeout   = errors.New("send timeout")
+	ErrAlreadyClosed = errors.New("already closed")
 )
-
-// ============ StreamEvent ============
-
-// StreamEvent 统一的流事件
-type StreamEvent struct {
-	Type string // "delta" | "final" | "error"
-
-	// 数据字段（根据 Type 不同使用不同字段）
-	Text  string  // 文本数据
-	Audio []byte  // 音频数据
-
-	// 错误信息
-	Err error
-}
 
 // ============ Codec ============
 
 // Codec 编解码器接口
-type Codec[Req any] interface {
-	// Encode 编码请求
-	Encode(req Req) ([]byte, error)
+type Codec interface {
+	// Encode 编码请求（内部做类型断言）
+	Encode(req any) ([]byte, error)
 
-	// Decode 解码响应
-	Decode(data []byte) (StreamEvent, error)
+	// Decode 解码响应（返回具体事件类型）
+	Decode(data []byte) (any, error)
 
 	// MessageType 返回 WebSocket 消息类型（TextMessage 或 BinaryMessage）
 	MessageType() int
@@ -78,16 +64,16 @@ func (c *WSConn) Close() error {
 
 // ============ WSStream ============
 
-// WSStream 泛型 WebSocket 双向流
-type WSStream[Req any] struct {
+// WSStream WebSocket 双向流（传输层，数据类型为 any）
+type WSStream struct {
 	conn  Conn
-	codec Codec[Req]
+	codec Codec
 
 	// 接收通道
-	recvCh chan StreamEvent
+	recvCh chan any
 
 	// 发送通道
-	sendCh   chan Req
+	sendCh   chan any
 	sendDone chan struct{}
 
 	// 生命周期
@@ -104,7 +90,7 @@ type WSStream[Req any] struct {
 }
 
 // NewWSStream 创建 WebSocket 流
-func NewWSStream[Req any](conn Conn, codec Codec[Req], opts ...Option) *WSStream[Req] {
+func NewWSStream(conn Conn, codec Codec, opts ...Option) *WSStream {
 	options := DefaultOptions()
 	for _, opt := range opts {
 		opt(&options)
@@ -112,11 +98,11 @@ func NewWSStream[Req any](conn Conn, codec Codec[Req], opts ...Option) *WSStream
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	s := &WSStream[Req]{
+	s := &WSStream{
 		conn:      conn,
 		codec:     codec,
-		recvCh:    make(chan StreamEvent, options.RecvBufferSize),
-		sendCh:    make(chan Req, options.SendBufferSize),
+		recvCh:    make(chan any, options.RecvBufferSize),
+		sendCh:    make(chan any, options.SendBufferSize),
 		sendDone:  make(chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -131,7 +117,7 @@ func NewWSStream[Req any](conn Conn, codec Codec[Req], opts ...Option) *WSStream
 }
 
 // Send 发送请求
-func (s *WSStream[Req]) Send(ctx context.Context, req Req) error {
+func (s *WSStream) Send(ctx context.Context, req any) error {
 	select {
 	case s.sendCh <- req:
 		return nil
@@ -143,12 +129,12 @@ func (s *WSStream[Req]) Send(ctx context.Context, req Req) error {
 }
 
 // Recv 返回接收通道
-func (s *WSStream[Req]) Recv() <-chan StreamEvent {
+func (s *WSStream) Recv() <-chan any {
 	return s.recvCh
 }
 
 // Close 关闭流
-func (s *WSStream[Req]) Close() error {
+func (s *WSStream) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		s.closed = true
@@ -172,17 +158,17 @@ func (s *WSStream[Req]) Close() error {
 }
 
 // Err 返回流错误
-func (s *WSStream[Req]) Err() error {
+func (s *WSStream) Err() error {
 	return s.recvErr
 }
 
 // Done 返回流结束信号
-func (s *WSStream[Req]) Done() <-chan struct{} {
+func (s *WSStream) Done() <-chan struct{} {
 	return s.ctx.Done()
 }
 
 // readLoop 读取循环
-func (s *WSStream[Req]) readLoop() {
+func (s *WSStream) readLoop() {
 	defer s.wg.Done()
 	defer s.Close()
 
@@ -197,34 +183,33 @@ func (s *WSStream[Req]) readLoop() {
 		_, data, err := s.conn.Read()
 		if err != nil {
 			s.setRecvErr(fmt.Errorf("network: %w", err))
-			s.recvCh <- StreamEvent{
-				Type: "error",
-				Err:  fmt.Errorf("network: %w", err),
-			}
+			s.recvCh <- fmt.Errorf("network: %w", err)
 			return
 		}
 
 		evt, err := s.codec.Decode(data)
 		if err != nil {
 			// 解码错误，继续读取
-			s.recvCh <- StreamEvent{
-				Type: "error",
-				Err:  fmt.Errorf("decode: %w", err),
-			}
+			s.recvCh <- fmt.Errorf("decode: %w", err)
+			continue
+		}
+
+		// 跳过空事件
+		if evt == nil {
 			continue
 		}
 
 		s.recvCh <- evt
 
-		// 收到 final 事件，结束流
-		if evt.Type == "final" {
+		// 检查是否是 final 事件（通过反射或接口判断）
+		if isFinal(evt) {
 			return
 		}
 	}
 }
 
 // writeLoop 写入循环
-func (s *WSStream[Req]) writeLoop() {
+func (s *WSStream) writeLoop() {
 	defer s.wg.Done()
 	defer close(s.sendDone)
 
@@ -242,18 +227,12 @@ func (s *WSStream[Req]) writeLoop() {
 
 			data, err := s.codec.Encode(req)
 			if err != nil {
-				s.recvCh <- StreamEvent{
-					Type: "error",
-					Err:  fmt.Errorf("encode: %w", err),
-				}
+				s.recvCh <- fmt.Errorf("encode: %w", err)
 				continue
 			}
 
 			if err := s.conn.Write(messageType, data); err != nil {
-				s.recvCh <- StreamEvent{
-					Type: "error",
-					Err:  fmt.Errorf("write: %w", err),
-				}
+				s.recvCh <- fmt.Errorf("write: %w", err)
 				return
 			}
 		}
@@ -261,8 +240,23 @@ func (s *WSStream[Req]) writeLoop() {
 }
 
 // setRecvErr 设置接收错误
-func (s *WSStream[Req]) setRecvErr(err error) {
+func (s *WSStream) setRecvErr(err error) {
 	if err != nil && s.recvErr == nil {
 		s.recvErr = err
 	}
+}
+
+// ============ Final Event Detection ============
+
+// FinalEvent final 事件接口
+type FinalEvent interface {
+	IsFinal() bool
+}
+
+// isFinal 检查是否是 final 事件
+func isFinal(evt any) bool {
+	if fe, ok := evt.(FinalEvent); ok {
+		return fe.IsFinal()
+	}
+	return false
 }
