@@ -88,7 +88,7 @@ func TestASRVolcano(t *testing.T) {
 			break
 		}
 
-		t.Logf("Event: type=%d text=%q isFinal=%v", event.Type, event.Text, event.IsFinal)
+		t.Logf("Event: type=%d text=%q isFinal=%v", event.Type, event.Text, event.IsFinal())
 
 		if event.Text != "" {
 			texts = append(texts, event.Text)

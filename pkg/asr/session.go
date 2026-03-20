@@ -3,13 +3,15 @@ package asr
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
 	"voicebot/pkg/asr/types"
+	wsvolc "voicebot/pkg/websocket/provider/volc"
+	"voicebot/pkg/websocket"
 )
 
 var (
@@ -19,6 +21,7 @@ var (
 
 type AsrSession struct {
 	provider types.Provider
+	stream   *websocket.WSStream
 	opts     types.SessionOptions
 
 	writeCh chan []byte
@@ -60,10 +63,13 @@ func NewASRSession(
 		startTime: time.Now(),
 	}
 
-	if err := provider.Connect(ctx, opts); err != nil {
+	// 连接并获取 WSStream
+	stream, err := provider.Connect(ctx, opts)
+	if err != nil {
 		cancel()
 		return nil, err
 	}
+	s.stream = stream
 
 	s.wg.Add(2)
 
@@ -114,9 +120,9 @@ func (s *AsrSession) Close() error {
 
 		s.cancel()
 
-		// 先关闭 provider（打断 socket read）
-		if err := s.provider.Close(); err != nil {
-			slog.Error("provider close failed", "err", err)
+		// 关闭 WSStream
+		if s.stream != nil {
+			_ = s.stream.Close()
 		}
 
 		s.wg.Wait()
@@ -141,20 +147,69 @@ func (s *AsrSession) readLoop() {
 	defer s.wg.Done()
 loop:
 	for {
-		event, err := s.provider.RecvEvent()
-		if err != nil {
-			if s.tryReconnect(err) {
-				continue
-			}
-			s.setErr(err)
-			break loop
-		}
-
 		select {
 		case <-s.ctx.Done():
 			s.setErr(s.ctx.Err())
 			break loop
-		case s.readCh <- event:
+		case evt, ok := <-s.stream.Recv():
+			if !ok {
+				s.setErr(errors.New("stream closed"))
+				break loop
+			}
+
+			// 处理错误类型
+			if err, ok := evt.(error); ok {
+				if s.tryReconnect(err) {
+					continue
+				}
+				s.setErr(err)
+				break loop
+			}
+
+			// 类型断言为 volc.AsrEvent
+			asrEvt, ok := evt.(wsvolc.AsrEvent)
+			if !ok {
+				continue
+			}
+
+			// 转换为 types.AsrEvent
+			var event *types.AsrEvent
+			switch asrEvt.Type {
+			case wsvolc.AsrEventPartial:
+				event = &types.AsrEvent{
+					Type:       types.EventPartial,
+					Text:       asrEvt.Text,
+					Confidence: float32(asrEvt.Confidence),
+				}
+
+			case wsvolc.AsrEventFinal:
+				event = &types.AsrEvent{
+					Type:       types.EventFinal,
+					Text:       asrEvt.Text,
+					Confidence: float32(asrEvt.Confidence),
+				}
+
+			case wsvolc.AsrEventError:
+				event = &types.AsrEvent{
+					Type: types.EventError,
+					Err:  asrEvt.Err,
+				}
+
+			default:
+				continue
+			}
+
+			select {
+			case <-s.ctx.Done():
+				s.setErr(s.ctx.Err())
+				break loop
+			case s.readCh <- event:
+			}
+
+			// 如果是 final 事件，结束
+			if asrEvt.Type == wsvolc.AsrEventFinal {
+				break loop
+			}
 		}
 	}
 }
@@ -169,7 +224,16 @@ loop:
 			s.setErr(s.ctx.Err())
 			break loop
 		case data := <-s.writeCh:
-			if err := s.provider.SendAudio(data, false); err != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := s.stream.Send(ctx, wsvolc.AsrRequest{
+				Audio:  data,
+				IsLast: false,
+			})
+			cancel()
+			if err != nil {
+				if s.tryReconnect(err) {
+					continue
+				}
 				s.setErr(err)
 				break loop
 			}
@@ -202,10 +266,18 @@ func (s *AsrSession) tryReconnect(err error) bool {
 
 	slog.Warn("asr reconnecting", "err", err)
 
-	if err := s.provider.Connect(s.ctx, s.opts); err != nil {
-		slog.Error("asr reconnect failed", "err", err)
+	// 关闭旧 stream
+	if s.stream != nil {
+		_ = s.stream.Close()
+	}
+
+	// 重新连接
+	stream, connErr := s.provider.Connect(s.ctx, s.opts)
+	if connErr != nil {
+		slog.Error("asr reconnect failed", "err", connErr)
 		return false
 	}
+	s.stream = stream
 
 	slog.Info("asr reconnected")
 	return true
@@ -228,8 +300,8 @@ func isReconnectable(err error) bool {
 		return true
 	}
 
-	// 连接重置/关闭可重连
-	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+	// WebSocket 流关闭
+	if errors.Is(err, websocket.ErrStreamClosed) {
 		return true
 	}
 

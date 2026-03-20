@@ -90,7 +90,6 @@ func (c *AsrClient) createSessionWithFallback(ctx context.Context, opts types.Se
 		// 创建 session
 		session, err := NewASRSession(ctx, provider, opts)
 		if err != nil {
-			_ = provider.Close()
 			lastErr = err
 			slog.Error("provider connection failed",
 				"provider", providerCfg.Name,

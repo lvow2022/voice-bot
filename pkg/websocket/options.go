@@ -1,4 +1,4 @@
-package wsstream
+package websocket
 
 // Options 流配置选项
 type Options struct {

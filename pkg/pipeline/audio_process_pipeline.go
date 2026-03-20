@@ -216,8 +216,8 @@ func (m *audioProcesser) recvLoop(h voicechain.SessionHandler) {
 			h.EmitFrame(m, &voicechain.TextFrame{
 				Text:          event.Text,
 				IsTranscribed: true,
-				IsPartial:     !event.IsFinal,
-				IsEnd:         event.IsFinal,
+				IsPartial:     !event.IsFinal(),
+				IsEnd:         event.IsFinal(),
 			})
 		}
 	}

@@ -3,14 +3,14 @@ package types
 import (
 	"context"
 	"time"
+
+	"voicebot/pkg/websocket"
 )
 
-// Provider 协议适配器接口，只负责协议转换
+// Provider 协议适配器接口，负责建立连接并返回 WSStream
 type Provider interface {
-	Connect(ctx context.Context, opts SessionOptions) error
-	SendAudio(data []byte, isLast bool) error
-	RecvEvent() (*AsrEvent, error)
-	Close() error
+	// Connect 建立连接，返回 WSStream 供调用方使用
+	Connect(ctx context.Context, opts SessionOptions) (*websocket.WSStream, error)
 }
 
 // SessionOptions 会话配置
@@ -40,7 +40,12 @@ type AsrEvent struct {
 	Type       AsrEventType
 	Text       string
 	Confidence float32
-	IsFinal    bool
+	Err        error
+}
+
+// IsFinal 实现 websocket.FinalEvent 接口
+func (e AsrEvent) IsFinal() bool {
+	return e.Type == EventFinal
 }
 
 // AsrEventType 事件类型

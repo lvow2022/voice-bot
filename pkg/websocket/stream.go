@@ -1,4 +1,4 @@
-package wsstream
+package websocket
 
 import (
 	"context"
@@ -99,13 +99,13 @@ func NewWSStream(conn Conn, codec Codec, opts ...Option) *WSStream {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &WSStream{
-		conn:      conn,
-		codec:     codec,
-		recvCh:    make(chan any, options.RecvBufferSize),
-		sendCh:    make(chan any, options.SendBufferSize),
-		sendDone:  make(chan struct{}),
-		ctx:       ctx,
-		cancel:    cancel,
+		conn:     conn,
+		codec:    codec,
+		recvCh:   make(chan any, options.RecvBufferSize),
+		sendCh:   make(chan any, options.SendBufferSize),
+		sendDone: make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 
 	// 启动读写循环

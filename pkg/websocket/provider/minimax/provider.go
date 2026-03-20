@@ -7,19 +7,19 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gorilla/websocket"
+	gorilla "github.com/gorilla/websocket"
 
 	"voicebot/pkg/tts/types"
-	"voicebot/pkg/wsstream"
+	"voicebot/pkg/websocket"
 )
 
 // ============ Provider ============
 
-// Provider Minimax TTS Provider（基于 wsstream）
+// Provider Minimax TTS Provider（基于 websocket）
 type Provider struct {
 	cfg    Config
 	codec  *Codec
-	stream *wsstream.WSStream
+	stream *websocket.WSStream
 }
 
 // NewProvider 创建 Provider
@@ -52,7 +52,7 @@ func (p *Provider) Connect(ctx context.Context, opts types.SessionOptions) error
 	h := http.Header{}
 	h.Set("Authorization", fmt.Sprintf("Bearer %s", p.cfg.APIKey))
 
-	dialer := websocket.Dialer{
+	dialer := gorilla.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
 	}
@@ -72,17 +72,17 @@ func (p *Provider) Connect(ctx context.Context, opts types.SessionOptions) error
 		return fmt.Errorf("encode start: %w", err)
 	}
 
-	if err := conn.WriteMessage(websocket.TextMessage, startData); err != nil {
+	if err := conn.WriteMessage(gorilla.TextMessage, startData); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("write start: %w", err)
 	}
 
 	// 创建流
-	p.stream = wsstream.NewWSStream(
-		wsstream.NewWSConn(conn),
+	p.stream = websocket.NewWSStream(
+		websocket.NewWSConn(conn),
 		p.codec,
-		wsstream.WithSendBufferSize(128),
-		wsstream.WithRecvBufferSize(128),
+		websocket.WithSendBufferSize(128),
+		websocket.WithRecvBufferSize(128),
 	)
 
 	return nil
