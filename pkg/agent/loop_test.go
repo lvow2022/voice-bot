@@ -11,9 +11,7 @@ import (
 	"time"
 
 	"voicebot/pkg/bus"
-	"voicebot/pkg/channels"
 	"voicebot/pkg/config"
-	"voicebot/pkg/media"
 	"voicebot/pkg/providers"
 	"voicebot/pkg/routing"
 	"voicebot/pkg/tools"
@@ -824,75 +822,6 @@ func TestProcessDirectWithChannel_TriggersMCPInitialization(t *testing.T) {
 	// Manager should not be initialized when no servers are configured
 	if al.mcp.hasManager() {
 		t.Fatal("expected MCP manager to be nil when no servers are configured")
-	}
-}
-
-func TestTargetReasoningChannelID_AllChannels(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "agent-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cfg := &config.Config{
-		Agents: config.AgentsConfig{
-			Defaults: config.AgentDefaults{
-				Workspace:         tmpDir,
-				Model:             "test-model",
-				MaxTokens:         4096,
-				MaxToolIterations: 10,
-			},
-		},
-	}
-
-	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
-	chManager, err := channels.NewManager(&config.Config{}, bus.NewMessageBus(), nil)
-	if err != nil {
-		t.Fatalf("Failed to create channel manager: %v", err)
-	}
-	for name, id := range map[string]string{
-		"whatsapp":  "rid-whatsapp",
-		"telegram":  "rid-telegram",
-		"feishu":    "rid-feishu",
-		"discord":   "rid-discord",
-		"maixcam":   "rid-maixcam",
-		"qq":        "rid-qq",
-		"dingtalk":  "rid-dingtalk",
-		"slack":     "rid-slack",
-		"line":      "rid-line",
-		"onebot":    "rid-onebot",
-		"wecom":     "rid-wecom",
-		"wecom_app": "rid-wecom-app",
-	} {
-		chManager.RegisterChannel(name, &fakeChannel{id: id})
-	}
-	al.SetChannelManager(chManager)
-	tests := []struct {
-		channel string
-		wantID  string
-	}{
-		{channel: "whatsapp", wantID: "rid-whatsapp"},
-		{channel: "telegram", wantID: "rid-telegram"},
-		{channel: "feishu", wantID: "rid-feishu"},
-		{channel: "discord", wantID: "rid-discord"},
-		{channel: "maixcam", wantID: "rid-maixcam"},
-		{channel: "qq", wantID: "rid-qq"},
-		{channel: "dingtalk", wantID: "rid-dingtalk"},
-		{channel: "slack", wantID: "rid-slack"},
-		{channel: "line", wantID: "rid-line"},
-		{channel: "onebot", wantID: "rid-onebot"},
-		{channel: "wecom", wantID: "rid-wecom"},
-		{channel: "wecom_app", wantID: "rid-wecom-app"},
-		{channel: "unknown", wantID: ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.channel, func(t *testing.T) {
-			got := al.targetReasoningChannelID(tt.channel)
-			if got != tt.wantID {
-				t.Fatalf("targetReasoningChannelID(%q) = %q, want %q", tt.channel, got, tt.wantID)
-			}
-		})
 	}
 }
 

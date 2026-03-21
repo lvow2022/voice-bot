@@ -24,7 +24,6 @@ import (
 	"voicebot/pkg/config"
 	"voicebot/pkg/constants"
 	"voicebot/pkg/logger"
-	"voicebot/pkg/media"
 	"voicebot/pkg/providers"
 	"voicebot/pkg/routing"
 	"voicebot/pkg/skills"
@@ -42,7 +41,6 @@ type AgentLoop struct {
 	running        atomic.Bool
 	summarizing    sync.Map
 	fallback       *providers.FallbackChain
-	mediaStore     media.MediaStore
 	transcriber    voice.Transcriber
 	cmdRegistry    *commands.Registry
 	mcp            mcpRuntime
@@ -428,12 +426,6 @@ func (al *AgentLoop) GetConfig() *config.Config {
 	return al.cfg
 }
 
-// SetMediaStore injects a MediaStore for media lifecycle management.
-func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
-	al.mediaStore = s
-	// Note: send_file tool is a stub, so no need to propagate store
-}
-
 // SetTranscriber injects a voice transcriber for agent-level audio transcription.
 func (al *AgentLoop) SetTranscriber(t voice.Transcriber) {
 	al.transcriber = t
@@ -444,53 +436,10 @@ var audioAnnotationRe = regexp.MustCompile(`\[(voice|audio)(?::[^\]]*)?\]`)
 // transcribeAudioInMessage resolves audio media refs, transcribes them, and
 // replaces audio annotations in msg.Content with the transcribed text.
 // Returns the (possibly modified) message and true if audio was transcribed.
+// Feature removed: mediaStore no longer available.
 func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.InboundMessage) (bus.InboundMessage, bool) {
-	if al.transcriber == nil || al.mediaStore == nil || len(msg.Media) == 0 {
-		return msg, false
-	}
-
-	// Transcribe each audio media ref in order.
-	var transcriptions []string
-	for _, ref := range msg.Media {
-		data, meta, err := al.mediaStore.ResolveWithMeta(ref)
-		if err != nil {
-			logger.WarnCF("voice", "Failed to resolve media ref", map[string]any{"ref": ref, "error": err})
-			continue
-		}
-		if !utils.IsAudioFile(meta.Filename, meta.ContentType) {
-			continue
-		}
-		// Transcribe expects a file path, but we have []byte data
-		// For now, skip transcription (stub implementation)
-		_ = data
-		logger.DebugCF("voice", "Audio transcription skipped (stub)", map[string]any{"ref": ref})
-		transcriptions = append(transcriptions, "[audio transcription not available]")
-	}
-
-	if len(transcriptions) == 0 {
-		return msg, false
-	}
-
-	al.sendTranscriptionFeedback(ctx, msg.Channel, msg.ChatID, msg.MessageID, transcriptions)
-
-	// Replace audio annotations sequentially with transcriptions.
-	idx := 0
-	newContent := audioAnnotationRe.ReplaceAllStringFunc(msg.Content, func(match string) string {
-		if idx >= len(transcriptions) {
-			return match
-		}
-		text := transcriptions[idx]
-		idx++
-		return "[voice: " + text + "]"
-	})
-
-	// Append any remaining transcriptions not matched by an annotation.
-	for ; idx < len(transcriptions); idx++ {
-		newContent += "\n[voice: " + transcriptions[idx] + "]"
-	}
-
-	msg.Content = newContent
-	return msg, true
+	// No-op: mediaStore removed
+	return msg, false
 }
 
 // sendTranscriptionFeedback sends feedback to the user with the result of
@@ -806,9 +755,10 @@ func (al *AgentLoop) runAgentLoop(
 	)
 
 	// Resolve media:// refs to base64 data URLs (streaming)
-	cfg := al.GetConfig()
-	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
-	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
+	// Feature removed: mediaStore no longer available
+	// cfg := al.GetConfig()
+	// maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
+	// messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
 	// 2. Save user message to session
 	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
@@ -1268,17 +1218,12 @@ func (al *AgentLoop) runLLMIteration(
 			}
 
 			// If tool returned media refs, publish them as outbound media
+			// Feature removed: mediaStore no longer available for resolving meta
 			if len(r.result.Media) > 0 {
 				parts := make([]bus.MediaPart, 0, len(r.result.Media))
 				for _, ref := range r.result.Media {
 					part := bus.MediaPart{Ref: ref}
-					if al.mediaStore != nil {
-						if _, meta, err := al.mediaStore.ResolveWithMeta(ref); err == nil {
-							part.Filename = meta.Filename
-							part.ContentType = meta.ContentType
-							part.Type = inferMediaType(meta.Filename, meta.ContentType)
-						}
-					}
+					// Cannot resolve meta without mediaStore
 					parts = append(parts, part)
 				}
 				al.bus.PublishOutboundMedia(ctx, bus.OutboundMediaMessage{
@@ -1858,12 +1803,8 @@ func extractProvider(registry *AgentRegistry) (providers.LLMProvider, bool) {
 }
 
 // resolveMediaRefs resolves media:// refs in messages to base64 data URLs.
-// This is a simplified stub implementation.
-func resolveMediaRefs(messages []providers.Message, store media.MediaStore, maxSize int) []providers.Message {
-	if store == nil {
-		return messages
-	}
-	// For now, return messages as-is since we're using stub media store
-	// In a full implementation, this would resolve media:// refs to base64 data URLs
+// Feature removed: mediaStore no longer available.
+func resolveMediaRefs(messages []providers.Message, store interface{}, maxSize int) []providers.Message {
+	// No-op: mediaStore removed
 	return messages
 }
