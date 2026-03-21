@@ -19,7 +19,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"voicebot/pkg/bus"
 	"voicebot/pkg/commands"
 	"voicebot/pkg/config"
 	"voicebot/pkg/constants"
@@ -33,8 +32,44 @@ import (
 	"voicebot/pkg/voice"
 )
 
+// Local message types (bus package removed)
+type InboundMessage struct {
+	Channel    string
+	ChatID     string
+	SenderID   string
+	Content    string
+	Media      []string
+	MediaScope string
+	ReplyTo    string
+	MessageID  string
+	SessionKey string
+	Peer       *Peer
+	Sender     *SenderInfo
+	Metadata   map[string]any
+}
+
+type OutboundMessage struct {
+	Channel          string
+	ChatID           string
+	Content          string
+	ReplyTo          string
+	ReplyToMessageID string
+}
+
+type Peer struct {
+	ID       string
+	Name     string
+	Username string
+	Kind     string
+}
+
+type SenderInfo struct {
+	ID       string
+	Name     string
+	Username string
+}
+
 type AgentLoop struct {
-	bus            *bus.MessageBus
 	cfg            *config.Config
 	registry       *AgentRegistry
 	state          *state.Manager
@@ -74,13 +109,12 @@ const (
 
 func NewAgentLoop(
 	cfg *config.Config,
-	msgBus *bus.MessageBus,
 	provider providers.LLMProvider,
 ) *AgentLoop {
 	registry := NewAgentRegistry(cfg, provider)
 
 	// Register shared tools to all agents
-	registerSharedTools(cfg, msgBus, registry, provider)
+	registerSharedTools(cfg, registry, provider)
 
 	// Set up shared fallback chain
 	cooldown := providers.NewCooldownTracker()
@@ -94,7 +128,6 @@ func NewAgentLoop(
 	}
 
 	al := &AgentLoop{
-		bus:         msgBus,
 		cfg:         cfg,
 		registry:    registry,
 		state:       stateManager,
@@ -109,7 +142,6 @@ func NewAgentLoop(
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
 func registerSharedTools(
 	cfg *config.Config,
-	msgBus *bus.MessageBus,
 	registry *AgentRegistry,
 	provider providers.LLMProvider,
 ) {
@@ -169,18 +201,10 @@ func registerSharedTools(
 			agent.Tools.Register(tools.NewSPITool())
 		}
 
-		// Message tool
+		// Message tool (bus removed - callback not set)
 		if cfg.Tools.IsToolEnabled("message") {
 			messageTool := tools.NewMessageTool()
-			messageTool.SetSendCallback(func(channel, chatID, content string) error {
-				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer pubCancel()
-				return msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-					Channel: channel,
-					ChatID:  chatID,
-					Content: content,
-				})
-			})
+			// Note: SetSendCallback removed - bus no longer available
 			agent.Tools.Register(messageTool)
 		}
 
@@ -241,46 +265,9 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		default:
-			msg, ok := al.bus.ConsumeInbound(ctx)
-			if !ok {
-				continue
-			}
-
-			// Process message
-			func() {
-				// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
-				// Currently disabled because files are deleted before the LLM can access their content.
-				// defer func() {
-				// 	if al.mediaStore != nil && msg.MediaScope != "" {
-				// 		if releaseErr := al.mediaStore.ReleaseAll(msg.MediaScope); releaseErr != nil {
-				// 			logger.WarnCF("agent", "Failed to release media", map[string]any{
-				// 				"scope": msg.MediaScope,
-				// 				"error": releaseErr.Error(),
-				// 			})
-				// 		}
-				// 	}
-				// }()
-
-				response, err := al.processMessage(ctx, msg)
-				if err != nil {
-					response = fmt.Sprintf("Error processing message: %v", err)
-				}
-
-				if response != "" {
-					// Message tool is disabled (stub), so always send the response.
-					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-						Channel: msg.Channel,
-						ChatID:  msg.ChatID,
-						Content: response,
-					})
-					logger.InfoCF("agent", "Published outbound response",
-						map[string]any{
-							"channel":     msg.Channel,
-							"chat_id":     msg.ChatID,
-							"content_len": len(response),
-						})
-				}
-			}()
+			// Bus removed - no messages to consume
+			// Sleep briefly to avoid busy loop
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 
@@ -370,7 +357,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	}
 
 	// Ensure shared tools are re-registered on the new registry
-	registerSharedTools(cfg, al.bus, registry, provider)
+	registerSharedTools(cfg, registry, provider)
 
 	// Atomically swap the config and registry under write lock
 	// This ensures readers see a consistent pair
@@ -437,7 +424,7 @@ var audioAnnotationRe = regexp.MustCompile(`\[(voice|audio)(?::[^\]]*)?\]`)
 // replaces audio annotations in msg.Content with the transcribed text.
 // Returns the (possibly modified) message and true if audio was transcribed.
 // Feature removed: mediaStore no longer available.
-func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.InboundMessage) (bus.InboundMessage, bool) {
+func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg InboundMessage) (InboundMessage, bool) {
 	// No-op: mediaStore removed
 	return msg, false
 }
@@ -516,7 +503,7 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 		return "", err
 	}
 
-	msg := bus.InboundMessage{
+	msg := InboundMessage{
 		Channel:    channel,
 		SenderID:   "cron",
 		ChatID:     chatID,
@@ -549,7 +536,7 @@ func (al *AgentLoop) ProcessHeartbeat(
 	})
 }
 
-func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+func (al *AgentLoop) processMessage(ctx context.Context, msg InboundMessage) (string, error) {
 	// Add message preview to log (show full content for error messages)
 	var logContent string
 	if strings.Contains(msg.Content, "Error:") || strings.Contains(msg.Content, "error") {
@@ -624,7 +611,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	return al.runAgentLoop(ctx, agent, opts)
 }
 
-func (al *AgentLoop) resolveMessageRoute(msg bus.InboundMessage) (routing.ResolvedRoute, *AgentInstance, error) {
+func (al *AgentLoop) resolveMessageRoute(msg InboundMessage) (routing.ResolvedRoute, *AgentInstance, error) {
 	registry := al.GetRegistry()
 	route := registry.ResolveRoute(routing.RouteInput{
 		Channel:    msg.Channel,
@@ -655,7 +642,7 @@ func resolveScopeKey(route routing.ResolvedRoute, msgSessionKey string) string {
 
 func (al *AgentLoop) processSystemMessage(
 	ctx context.Context,
-	msg bus.InboundMessage,
+	msg InboundMessage,
 ) (string, error) {
 	if msg.Channel != "system" {
 		return "", fmt.Errorf(
@@ -786,14 +773,8 @@ func (al *AgentLoop) runAgentLoop(
 		al.maybeSummarize(agent, opts.SessionKey, opts.Channel, opts.ChatID)
 	}
 
-	// 7. Optional: send response via bus
-	if opts.SendResponse {
-		al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-			Channel: opts.Channel,
-			ChatID:  opts.ChatID,
-			Content: finalContent,
-		})
-	}
+	// 7. Optional: send response via bus (removed - bus no longer available)
+	// if opts.SendResponse { ... }
 
 	// 8. Log response
 	responsePreview := utils.Truncate(finalContent, 120)
@@ -817,46 +798,8 @@ func (al *AgentLoop) handleReasoning(
 	ctx context.Context,
 	reasoningContent, channelName, channelID string,
 ) {
-	if reasoningContent == "" || channelName == "" || channelID == "" {
-		return
-	}
-
-	// Check context cancellation before attempting to publish,
-	// since PublishOutbound's select may race between send and ctx.Done().
-	if ctx.Err() != nil {
-		return
-	}
-
-	// Use a short timeout so the goroutine does not block indefinitely when
-	// the outbound bus is full.  Reasoning output is best-effort; dropping it
-	// is acceptable to avoid goroutine accumulation.
-	pubCtx, pubCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer pubCancel()
-
-	if err := al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Channel: channelName,
-		ChatID:  channelID,
-		Content: reasoningContent,
-	}); err != nil {
-		// Treat context.DeadlineExceeded / context.Canceled as expected
-		// (bus full under load, or parent canceled).  Check the error
-		// itself rather than ctx.Err(), because pubCtx may time out
-		// (5 s) while the parent ctx is still active.
-		// Also treat ErrBusClosed as expected — it occurs during normal
-		// shutdown when the bus is closed before all goroutines finish.
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
-			errors.Is(err, bus.ErrBusClosed) {
-			logger.DebugCF("agent", "Reasoning publish skipped (timeout/cancel)", map[string]any{
-				"channel": channelName,
-				"error":   err.Error(),
-			})
-		} else {
-			logger.WarnCF("agent", "Failed to publish reasoning (best-effort)", map[string]any{
-				"channel": channelName,
-				"error":   err.Error(),
-			})
-		}
-	}
+	// Feature removed: bus no longer available
+	// Reasoning output is no longer published
 }
 
 // runLLMIteration executes the LLM call loop with tool handling.
@@ -1007,11 +950,7 @@ func (al *AgentLoop) runLLMIteration(
 				)
 
 				if retry == 0 && !constants.IsInternalChannel(opts.Channel) {
-					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-						Channel: opts.Channel,
-						ChatID:  opts.ChatID,
-						Content: "Context window exceeded. Compressing history and retrying...",
-					})
+					// Bus removed - cannot publish context exceeded message
 				}
 
 				al.forceCompression(agent, opts.SessionKey)
@@ -1153,13 +1092,8 @@ func (al *AgentLoop) runLLMIteration(
 					// Send ForUser content directly to the user (immediate feedback),
 					// mirroring the synchronous tool execution path.
 					if !result.Silent && result.ForUser != "" {
-						outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer outCancel()
-						_ = al.bus.PublishOutbound(outCtx, bus.OutboundMessage{
-							Channel: opts.Channel,
-							ChatID:  opts.ChatID,
-							Content: result.ForUser,
-						})
+						// Bus removed - cannot publish async tool result
+					_ = result.ForUser
 					}
 
 					// Determine content for the agent loop (ForLLM or error).
@@ -1178,14 +1112,8 @@ func (al *AgentLoop) runLLMIteration(
 							"channel":     opts.Channel,
 						})
 
-					pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer pubCancel()
-					_ = al.bus.PublishInbound(pubCtx, bus.InboundMessage{
-						Channel:  "system",
-						SenderID: fmt.Sprintf("async:%s", tc.Name),
-						ChatID:   fmt.Sprintf("%s:%s", opts.Channel, opts.ChatID),
-						Content:  content,
-					})
+					// Bus removed - cannot publish async result back to inbound
+					_ = content
 				}
 
 				toolResult := agent.Tools.ExecuteWithContext(
@@ -1203,34 +1131,19 @@ func (al *AgentLoop) runLLMIteration(
 
 		// Process results in original order (send to user, save to session)
 		for _, r := range agentResults {
-			// Send ForUser content to user immediately if not Silent
+			// Send ForUser content to user immediately if not Silent (bus removed)
 			if !r.result.Silent && r.result.ForUser != "" && opts.SendResponse {
-				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-					Channel: opts.Channel,
-					ChatID:  opts.ChatID,
-					Content: r.result.ForUser,
-				})
-				logger.DebugCF("agent", "Sent tool result to user",
+				// Bus removed - cannot send tool result to user
+				logger.DebugCF("agent", "Tool result (not sent - bus removed)",
 					map[string]any{
 						"tool":        r.tc.Name,
 						"content_len": len(r.result.ForUser),
 					})
 			}
 
-			// If tool returned media refs, publish them as outbound media
-			// Feature removed: mediaStore no longer available for resolving meta
+			// If tool returned media refs, publish them as outbound media (bus removed)
 			if len(r.result.Media) > 0 {
-				parts := make([]bus.MediaPart, 0, len(r.result.Media))
-				for _, ref := range r.result.Media {
-					part := bus.MediaPart{Ref: ref}
-					// Cannot resolve meta without mediaStore
-					parts = append(parts, part)
-				}
-				al.bus.PublishOutboundMedia(ctx, bus.OutboundMediaMessage{
-					Channel: opts.Channel,
-					ChatID:  opts.ChatID,
-					Parts:   parts,
-				})
+				// Bus removed - cannot publish media
 			}
 
 			// Determine content for LLM based on tool result
@@ -1663,7 +1576,7 @@ func (al *AgentLoop) estimateTokens(messages []providers.Message) int {
 
 func (al *AgentLoop) handleCommand(
 	ctx context.Context,
-	msg bus.InboundMessage,
+	msg InboundMessage,
 	agent *AgentInstance,
 	opts *processOptions,
 ) (string, bool) {
@@ -1752,7 +1665,7 @@ func mapCommandError(result commands.ExecuteResult) string {
 }
 
 // extractPeer extracts the routing peer from the inbound message's structured Peer field.
-func extractPeer(msg bus.InboundMessage) *routing.RoutePeer {
+func extractPeer(msg InboundMessage) *routing.RoutePeer {
 	if msg.Peer.Kind == "" {
 		return nil
 	}
@@ -1767,7 +1680,7 @@ func extractPeer(msg bus.InboundMessage) *routing.RoutePeer {
 	return &routing.RoutePeer{Kind: msg.Peer.Kind, ID: peerID}
 }
 
-func inboundMetadata(msg bus.InboundMessage, key string) string {
+func inboundMetadata(msg InboundMessage, key string) string {
 	if msg.Metadata == nil {
 		return ""
 	}
@@ -1780,7 +1693,7 @@ func inboundMetadata(msg bus.InboundMessage, key string) string {
 }
 
 // extractParentPeer extracts the parent peer (reply-to) from inbound message metadata.
-func extractParentPeer(msg bus.InboundMessage) *routing.RoutePeer {
+func extractParentPeer(msg InboundMessage) *routing.RoutePeer {
 	parentKind := inboundMetadata(msg, metadataKeyParentPeerKind)
 	parentID := inboundMetadata(msg, metadataKeyParentPeerID)
 	if parentKind == "" || parentID == "" {

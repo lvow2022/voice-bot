@@ -10,27 +10,17 @@ import (
 	"testing"
 	"time"
 
-	"voicebot/pkg/bus"
 	"voicebot/pkg/config"
 	"voicebot/pkg/providers"
 	"voicebot/pkg/routing"
 	"voicebot/pkg/tools"
 )
 
-type fakeChannel struct{ id string }
-
-func (f *fakeChannel) Name() string                                            { return "fake" }
-func (f *fakeChannel) Start(ctx context.Context) error                         { return nil }
-func (f *fakeChannel) Stop(ctx context.Context) error                          { return nil }
-func (f *fakeChannel) Send(ctx context.Context, msg bus.OutboundMessage) error { return nil }
-func (f *fakeChannel) IsRunning() bool                                         { return true }
-func (f *fakeChannel) IsAllowed(string) bool                                   { return true }
-func (f *fakeChannel) IsAllowedSender(sender bus.SenderInfo) bool              { return true }
-func (f *fakeChannel) ReasoningChannelID() string                              { return f.id }
+// fakeChannel removed - bus package deleted
 
 func newTestAgentLoop(
 	t *testing.T,
-) (al *AgentLoop, cfg *config.Config, msgBus *bus.MessageBus, provider *mockProvider, cleanup func()) {
+) (al *AgentLoop, cfg *config.Config, provider *mockProvider, cleanup func()) {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
@@ -46,14 +36,13 @@ func newTestAgentLoop(
 			},
 		},
 	}
-	msgBus = bus.NewMessageBus()
 	provider = &mockProvider{}
-	al = NewAgentLoop(cfg, msgBus, provider)
-	return al, cfg, msgBus, provider, func() { os.RemoveAll(tmpDir) }
+	al = NewAgentLoop(cfg, provider)
+	return al, cfg, provider, func() { os.RemoveAll(tmpDir) }
 }
 
 func TestRecordLastChannel(t *testing.T) {
-	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 
 	testChannel := "test-channel"
@@ -70,7 +59,7 @@ func TestRecordLastChannel(t *testing.T) {
 }
 
 func TestRecordLastChatID(t *testing.T) {
-	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
+	al, cfg, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 
 	testChatID := "test-chat-id-123"
