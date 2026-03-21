@@ -1366,41 +1366,13 @@ func (al *AgentLoop) runLLMIteration(
 }
 
 // selectCandidates returns the model candidates and resolved model name to use
-// for a conversation turn. When model routing is configured and the incoming
-// message scores below the complexity threshold, it returns the light model
-// candidates instead of the primary ones.
-//
-// The returned (candidates, model) pair is used for all LLM calls within one
-// turn — tool follow-up iterations use the same tier as the initial call so
-// that a multi-step tool chain doesn't switch models mid-way.
+// for a conversation turn.
 func (al *AgentLoop) selectCandidates(
 	agent *AgentInstance,
 	userMsg string,
 	history []providers.Message,
 ) (candidates []providers.FallbackCandidate, model string) {
-	if agent.Router == nil || len(agent.LightCandidates) == 0 {
-		return agent.Candidates, agent.Model
-	}
-
-	_, usedLight, score := agent.Router.SelectModel(userMsg, history, agent.Model)
-	if !usedLight {
-		logger.DebugCF("agent", "Model routing: primary model selected",
-			map[string]any{
-				"agent_id":  agent.ID,
-				"score":     score,
-				"threshold": agent.Router.Threshold(),
-			})
-		return agent.Candidates, agent.Model
-	}
-
-	logger.InfoCF("agent", "Model routing: light model selected",
-		map[string]any{
-			"agent_id":    agent.ID,
-			"light_model": agent.Router.LightModel(),
-			"score":       score,
-			"threshold":   agent.Router.Threshold(),
-		})
-	return agent.LightCandidates, agent.Router.LightModel()
+	return agent.Candidates, agent.Model
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
