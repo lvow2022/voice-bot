@@ -20,7 +20,6 @@ import (
 	"unicode/utf8"
 
 	"voicebot/pkg/bus"
-	"voicebot/pkg/channels"
 	"voicebot/pkg/commands"
 	"voicebot/pkg/config"
 	"voicebot/pkg/constants"
@@ -43,7 +42,6 @@ type AgentLoop struct {
 	running        atomic.Bool
 	summarizing    sync.Map
 	fallback       *providers.FallbackChain
-	channelManager *channels.Manager
 	mediaStore     media.MediaStore
 	transcriber    voice.Transcriber
 	cmdRegistry    *commands.Registry
@@ -320,10 +318,6 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 	}
 }
 
-func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
-	al.channelManager = cm
-}
-
 // ReloadProviderAndConfig atomically swaps the provider and config with proper synchronization.
 // It uses a context to allow timeout control from the caller.
 // Returns an error if the reload fails or context is canceled.
@@ -500,44 +494,14 @@ func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.Inbou
 }
 
 // sendTranscriptionFeedback sends feedback to the user with the result of
-// audio transcription if the option is enabled. It uses Manager.SendMessage
-// which executes synchronously (rate limiting, splitting, retry) so that
-// ordering with the subsequent placeholder is guaranteed.
+// audio transcription if the option is enabled.
+// Feature removed: channelManager no longer available.
 func (al *AgentLoop) sendTranscriptionFeedback(
 	ctx context.Context,
 	channel, chatID, messageID string,
 	validTexts []string,
 ) {
-	if !al.cfg.Voice.EchoTranscription {
-		return
-	}
-	if al.channelManager == nil {
-		return
-	}
-
-	var nonEmpty []string
-	for _, t := range validTexts {
-		if t != "" {
-			nonEmpty = append(nonEmpty, t)
-		}
-	}
-
-	var feedbackMsg string
-	if len(nonEmpty) > 0 {
-		feedbackMsg = "Transcript: " + strings.Join(nonEmpty, "\n")
-	} else {
-		feedbackMsg = "No voice detected in the audio"
-	}
-
-	err := al.channelManager.SendMessage(ctx, bus.OutboundMessage{
-		Channel:          channel,
-		ChatID:           chatID,
-		Content:          feedbackMsg,
-		ReplyToMessageID: messageID,
-	})
-	if err != nil {
-		logger.WarnCF("voice", "Failed to send transcription feedback", map[string]any{"error": err.Error()})
-	}
+	// No-op: channelManager removed
 }
 
 // inferMediaType determines the media type ("image", "audio", "video", "file")
@@ -655,14 +619,10 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		},
 	)
 
-	var hadAudio bool
-	msg, hadAudio = al.transcribeAudioInMessage(ctx, msg)
+	var _ bool // hadAudio - no longer used after channelManager removal
+	msg, _ = al.transcribeAudioInMessage(ctx, msg)
 
-	// For audio messages the placeholder was deferred by the channel.
-	// Now that transcription (and optional feedback) is done, send it.
-	if hadAudio && al.channelManager != nil {
-		al.channelManager.SendPlaceholder(ctx, msg.Channel, msg.ChatID)
-	}
+	// Placeholder feature removed (channelManager no longer available)
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
@@ -899,12 +859,7 @@ func (al *AgentLoop) runAgentLoop(
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {
-	if al.channelManager == nil {
-		return ""
-	}
-	if ch, ok := al.channelManager.GetChannel(channelName); ok {
-		return ch.ReasoningChannelID()
-	}
+	// Feature removed: channelManager no longer available
 	return ""
 }
 
@@ -1811,20 +1766,10 @@ func (al *AgentLoop) buildCommandsRuntime(agent *AgentInstance, opts *processOpt
 		Config:          cfg,
 		ListAgentIDs:    registry.ListAgentIDs,
 		ListDefinitions: al.cmdRegistry.Definitions(),
-		GetEnabledChannels: func() []string {
-			if al.channelManager == nil {
-				return nil
-			}
-			return al.channelManager.GetEnabledChannels()
-		},
+		// Channel management features removed
+		GetEnabledChannels: func() []string { return nil },
 		SwitchChannel: func(value string) error {
-			if al.channelManager == nil {
-				return fmt.Errorf("channel manager not initialized")
-			}
-			if _, exists := al.channelManager.GetChannel(value); !exists && value != "cli" {
-				return fmt.Errorf("channel '%s' not found or not enabled", value)
-			}
-			return nil
+			return fmt.Errorf("channel switching not supported")
 		},
 	}
 	if agent != nil {
