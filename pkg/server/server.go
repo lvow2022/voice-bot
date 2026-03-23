@@ -8,9 +8,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	asrtypes "voicebot/pkg/asr/types"
 	"voicebot/pkg/agent"
-	ttstypes "voicebot/pkg/tts/types"
 	"voicebot/pkg/voicechain"
 )
 
@@ -18,24 +16,19 @@ import (
 type Server struct {
 	config      *ServerConfig
 	registry    *agent.AgentRegistry
-	pipelineCfg *PipelineConfig
 	sessionMgr  *SessionManager
 	upgrader    websocket.Upgrader
 	httpServer  *http.Server
 }
 
 // New 创建 WebSocket 服务
-func New(registry *agent.AgentRegistry, config *ServerConfig, pipelineCfg *PipelineConfig) *Server {
+func New(registry *agent.AgentRegistry, config *ServerConfig) *Server {
 	if config == nil {
 		config = DefaultServerConfig()
-	}
-	if pipelineCfg == nil {
-		pipelineCfg = DefaultPipelineConfig()
 	}
 	return &Server{
 		config:      config,
 		registry:    registry,
-		pipelineCfg: pipelineCfg,
 		sessionMgr:  NewSessionManager(config.TokenTTL),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
@@ -94,19 +87,25 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 设置默认值
-	asrOpts := req.ASR
-	if asrOpts.SampleRate == 0 {
-		asrOpts = asrtypes.DefaultSessionOptions()
+	// 设置 ASR 默认值
+	if req.ASR.Name == "" {
+		req.ASR.Name = "volcano"
 	}
-	ttsOpts := req.TTS
-	if ttsOpts.SampleRate == 0 {
-		ttsOpts = ttstypes.DefaultSessionOptions()
+	if req.ASR.SampleRate == 0 {
+		req.ASR.SampleRate = 16000
+	}
+	if req.ASR.Format == "" {
+		req.ASR.Format = "pcm"
+	}
+
+	// 设置 TTS 默认值
+	if req.TTS.Name == "" {
+		req.TTS.Name = "minimax"
 	}
 
 	// 创建 token
 	token := generateToken()
-	ps := s.sessionMgr.Create(agentID, asrOpts, ttsOpts)
+	ps := s.sessionMgr.Create(&req)
 	s.sessionMgr.Store(token, ps)
 
 	resp := InitResponse{
@@ -166,8 +165,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Output(transport)
 
 	// 构建 pipeline
-	builder := NewPipelineBuilder(s.pipelineCfg)
-	handlers, err := builder.Build(r.Context(), agentInstance, ps.ASR, ps.TTS, transport)
+	builder := NewPipelineBuilder(&ps.LLM, &ps.ASR, &ps.TTS, &ps.VAD)
+	handlers, err := builder.Build(r.Context(), agentInstance, transport)
 	if err != nil {
 		slog.Error("failed to build pipeline", "error", err)
 		transport.SendError("pipeline_error", err.Error())

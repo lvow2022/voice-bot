@@ -5,14 +5,17 @@ import (
 	"time"
 
 	asrtypes "voicebot/pkg/asr/types"
+	"voicebot/pkg/audio"
 	ttstypes "voicebot/pkg/tts/types"
 )
 
 // PendingSession 待连接的会话
 type PendingSession struct {
 	AgentID   string
-	ASR       asrtypes.SessionOptions
-	TTS       ttstypes.SessionOptions
+	LLM       LLMConfig
+	ASR       asrtypes.ProviderConfig
+	TTS       ttstypes.ProviderConfig
+	VAD       VADConfig
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	Used      bool
@@ -37,12 +40,22 @@ func NewSessionManager(ttl time.Duration) *SessionManager {
 }
 
 // Create 创建新的待连接会话
-func (sm *SessionManager) Create(agentID string, asr asrtypes.SessionOptions, tts ttstypes.SessionOptions) *PendingSession {
+func (sm *SessionManager) Create(req *InitRequest) *PendingSession {
 	now := time.Now()
+
+	// 设置默认值
+	vad := req.VAD
+	if vad.Type == "" {
+		vad.Type = string(audio.VADTypeSilero)
+		vad.Option = audio.DefaultVADDetectorOption()
+	}
+
 	return &PendingSession{
-		AgentID:   agentID,
-		ASR:       asr,
-		TTS:       tts,
+		AgentID:   req.Agent,
+		LLM:       req.LLM,
+		ASR:       req.ASR,
+		TTS:       req.TTS,
+		VAD:       vad,
 		CreatedAt: now,
 		ExpiresAt: now.Add(sm.ttl),
 		Used:      false,

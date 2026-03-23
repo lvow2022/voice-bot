@@ -12,10 +12,7 @@ import (
 
 	"voicebot/pkg/agent"
 	"voicebot/pkg/config"
-	asrtypes "voicebot/pkg/asr/types"
-	"voicebot/pkg/audio"
 	"voicebot/pkg/providers"
-	ttstypes "voicebot/pkg/tts/types"
 	"voicebot/pkg/server"
 )
 
@@ -39,13 +36,10 @@ func main() {
 	// 3. 创建 Agent Registry
 	registry := agent.NewAgentRegistry(cfg, provider)
 
-	// 4. 创建 Pipeline 配置
-	pipelineCfg := buildPipelineConfig()
-
-	// 5. 创建 Server
+	// 4. 创建 Server
 	srv := server.New(registry, &server.ServerConfig{
 		Addr: *addr,
-	}, pipelineCfg)
+	})
 
 	// 6. 启动服务（在 goroutine 中）
 	ctx, cancel := context.WithCancel(context.Background())
@@ -112,43 +106,4 @@ func createProvider() providers.LLMProvider {
 	slog.Info("LLM provider created", "base", apiBase)
 
 	return provider
-}
-
-func buildPipelineConfig() *server.PipelineConfig {
-	// 从环境变量或默认值构建 Pipeline 配置
-	asrProvider := os.Getenv("ASR_PROVIDER")
-	if asrProvider == "" {
-		asrProvider = "volcano"
-	}
-
-	ttsProvider := os.Getenv("TTS_PROVIDER")
-	if ttsProvider == "" {
-		ttsProvider = "minimax"
-	}
-
-	ttsAPIKey := os.Getenv("TTS_API_KEY")
-	ttsVoiceID := os.Getenv("TTS_VOICE_ID")
-
-	asrAPIKey := os.Getenv("ASR_API_KEY")
-	asrAppID := os.Getenv("ASR_APP_ID")
-
-	return &server.PipelineConfig{
-		ASR: asrtypes.ProviderConfig{
-			Name:       asrProvider,
-			APIKey:     asrAPIKey,
-			AppID:      asrAppID,
-			SampleRate: 16000,
-			Format:     "pcm",
-		},
-		TTS: ttstypes.ClientConfig{
-			Primary: ttstypes.ProviderConfig{
-				Name:    ttsProvider,
-				APIKey:  ttsAPIKey,
-				VoiceID: ttsVoiceID,
-			},
-			Session: ttstypes.DefaultSessionOptions(),
-		},
-		VADType:   string(audio.VADTypeSilero),
-		VADOption: audio.DefaultVADDetectorOption(),
-	}
 }

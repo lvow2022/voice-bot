@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	asrtypes "voicebot/pkg/asr/types"
+	"voicebot/pkg/audio"
 	ttstypes "voicebot/pkg/tts/types"
 	"voicebot/pkg/voicechain"
 )
@@ -26,11 +27,35 @@ type ServerMessage struct {
 	Message   string `json:"message,omitempty"` // 错误消息
 }
 
+// LLMConfig LLM 配置
+type LLMConfig struct {
+	APIKey  string `json:"apiKey"`
+	APIBase string `json:"apiBase"`
+	Model   string `json:"model"`
+	Proxy   string `json:"proxy,omitempty"`
+}
+
+// VADConfig VAD 配置
+type VADConfig struct {
+	Type   string                `json:"type"`
+	Option audio.VADDetectorOption `json:"option"`
+}
+
 // InitRequest 会话初始化请求
 type InitRequest struct {
-	Agent string                  `json:"agent"`
-	ASR   asrtypes.SessionOptions `json:"asr,omitempty"`
-	TTS   ttstypes.SessionOptions `json:"tts,omitempty"`
+	Agent string `json:"agent"`
+
+	// LLM 配置
+	LLM LLMConfig `json:"llm"`
+
+	// ASR 配置
+	ASR asrtypes.ProviderConfig `json:"asr"`
+
+	// TTS 配置
+	TTS ttstypes.ProviderConfig `json:"tts"`
+
+	// VAD 配置
+	VAD VADConfig `json:"vad"`
 }
 
 // InitResponse 会话初始化响应
