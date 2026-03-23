@@ -16,22 +16,27 @@ import (
 
 // Server WebSocket 服务
 type Server struct {
-	config     *ServerConfig
-	registry   *agent.AgentRegistry
-	sessionMgr *SessionManager
-	upgrader   websocket.Upgrader
-	httpServer *http.Server
+	config      *ServerConfig
+	registry    *agent.AgentRegistry
+	pipelineCfg *PipelineConfig
+	sessionMgr  *SessionManager
+	upgrader    websocket.Upgrader
+	httpServer  *http.Server
 }
 
 // New 创建 WebSocket 服务
-func New(registry *agent.AgentRegistry, config *ServerConfig) *Server {
+func New(registry *agent.AgentRegistry, config *ServerConfig, pipelineCfg *PipelineConfig) *Server {
 	if config == nil {
 		config = DefaultServerConfig()
 	}
+	if pipelineCfg == nil {
+		pipelineCfg = DefaultPipelineConfig()
+	}
 	return &Server{
-		config:     config,
-		registry:   registry,
-		sessionMgr: NewSessionManager(config.TokenTTL),
+		config:      config,
+		registry:    registry,
+		pipelineCfg: pipelineCfg,
+		sessionMgr:  NewSessionManager(config.TokenTTL),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -149,7 +154,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
-	_ = agentInstance // TODO: 用于绑定 pipeline
 
 	// 创建 transport
 	transport := NewWSTransport(conn, ps.ASR.SampleRate)
@@ -161,7 +165,18 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Input(transport).
 		Output(transport)
 
-	// TODO: 绑定 pipeline (需要根据 agent 配置创建)
+	// 构建 pipeline
+	builder := NewPipelineBuilder(s.pipelineCfg)
+	handlers, err := builder.Build(r.Context(), agentInstance, ps.ASR, ps.TTS, transport)
+	if err != nil {
+		slog.Error("failed to build pipeline", "error", err)
+		transport.SendError("pipeline_error", err.Error())
+		conn.Close()
+		return
+	}
+
+	// 绑定 pipeline
+	session.Pipeline(handlers...)
 
 	// 发送就绪消息
 	if err := transport.SendReady(); err != nil {
