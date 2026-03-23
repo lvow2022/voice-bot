@@ -37,7 +37,7 @@ func main() {
 	registry := agent.NewAgentRegistry(cfg, provider)
 
 	// 4. 创建 Server
-	srv := server.New(registry, &server.ServerConfig{
+	srv := server.New(registry, cfg, provider, &server.ServerConfig{
 		Addr: *addr,
 	})
 

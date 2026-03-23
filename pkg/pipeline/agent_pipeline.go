@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"voicebot/pkg/agent"
-	"voicebot/pkg/providers"
 	"voicebot/pkg/speech"
 	"voicebot/pkg/stream"
 	"voicebot/pkg/tts"
@@ -17,17 +16,16 @@ import (
 
 // AgentPipelineOptions Agent Pipeline 配置选项
 type AgentPipelineOptions struct {
-	AgentInstance *agent.AgentInstance  // 复用现有 agent
-	TTSSession    *tts.TtsSession       // TTS 会话
-	StreamPlayer  *stream.StreamPlayer  // 音频播放器
-	SpeechConfig  speech.Config         // Scheduler 配置
+	AgentLoop    *agent.AgentLoop   // Per-session AgentLoop
+	SessionKey   string             // Session key for this voice connection
+	TTSSession   *tts.TtsSession    // TTS 会话
+	StreamPlayer *stream.StreamPlayer // 音频播放器
+	SpeechConfig speech.Config      // Scheduler 配置
 }
 
 // agentProcessor Agent 处理器
 type agentProcessor struct {
-	opts AgentPipelineOptions
-
-	// 运行时组件
+	opts      AgentPipelineOptions
 	scheduler *speech.Scheduler
 
 	// 生命周期控制
@@ -116,7 +114,7 @@ func (p *agentProcessor) OnBuildRequest(_ voicechain.SessionHandler, frame voice
 	}, nil
 }
 
-// OnExecute 执行 Agent 处理
+// OnExecute 执行 Agent 处理（使用 AgentLoop 流式处理）
 func (p *agentProcessor) OnExecute(ctx context.Context, h voicechain.SessionHandler, req voicechain.FrameRequest[string]) error {
 	userText := req.Req
 
@@ -124,53 +122,58 @@ func (p *agentProcessor) OnExecute(ctx context.Context, h voicechain.SessionHand
 	h.EmitEvent(p, voicechain.Event{Type: voicechain.StateAgentGenerating, Payload: userText})
 	slog.Debug("agent: generating response", "input_len", len(userText))
 
-	// 2. 调用 LLM
-	agentInstance := p.opts.AgentInstance
-	if agentInstance == nil {
-		slog.Error("agent: AgentInstance is nil")
+	// 2. 调用 AgentLoop 流式处理
+	agentLoop := p.opts.AgentLoop
+	if agentLoop == nil {
+		slog.Error("agent: AgentLoop is nil")
 		return nil
 	}
 
-	// 构建消息
-	messages := []providers.Message{
-		{Role: "user", Content: userText},
+	// 3. 创建流式回调，将 chunks 直接喂入 TTS Scheduler
+	var fullContent strings.Builder
+	callbacks := agent.StreamCallbacks{
+		OnChunk: func(chunk string) {
+			if chunk == "" {
+				return
+			}
+			fullContent.WriteString(chunk)
+			// 直接喂入 TTS Scheduler
+			p.scheduler.Feed(chunk)
+		},
 	}
 
-	// 调用 LLM Provider
-	response, err := agentInstance.Provider.Chat(ctx, messages, nil, agentInstance.Model, map[string]any{
-		"max_tokens":  agentInstance.MaxTokens,
-		"temperature": agentInstance.Temperature,
-	})
+	// 4. 调用 ProcessDirectStream
+	response, err := agentLoop.ProcessDirectStream(
+		ctx,
+		userText,
+		p.opts.SessionKey,
+		"voice",
+		"voice_session",
+		callbacks,
+	)
 	if err != nil {
-		slog.Error("agent: LLM call failed", "error", err)
+		slog.Error("agent: ProcessDirectStream failed", "error", err)
 		return err
 	}
 
-	// 3. 发送 Agent 开始说话事件
+	// 5. 发送 Agent 开始说话事件
 	h.EmitEvent(p, voicechain.Event{Type: voicechain.StateAgentSpeaking})
-	slog.Debug("agent: response received", "content_len", len(response.Content))
+	slog.Debug("agent: response received", "content_len", len(response))
 
-	// 4. 将响应喂入 Scheduler 进行 TTS
-	if response.Content != "" {
-		// 逐字符喂入 Scheduler（模拟流式）
-		for _, char := range response.Content {
-			p.scheduler.Feed(string(char))
-		}
-		p.scheduler.Flush()
+	// 6. Flush TTS 并等待播放完成
+	p.scheduler.Flush()
 
-		// 等待播放完成
-		for p.scheduler.IsPlaying() {
-			select {
-			case <-ctx.Done():
-				p.scheduler.Reset()
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
+	for p.scheduler.IsPlaying() {
+		select {
+		case <-ctx.Done():
+			p.scheduler.Reset()
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 
-	// 5. 发送播放完成事件
-	h.EmitEvent(p, voicechain.Event{Type: voicechain.StatePlaybackDone, Payload: response.Content})
+	// 7. 发送播放完成事件
+	h.EmitEvent(p, voicechain.Event{Type: voicechain.StatePlaybackDone, Payload: response})
 	slog.Debug("agent: playback done")
 
 	return nil

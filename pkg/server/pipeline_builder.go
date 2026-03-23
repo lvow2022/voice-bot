@@ -48,9 +48,12 @@ func (t *transportOutput) Write(data []byte) error {
 }
 
 // Build 构建完整的 voicechain pipeline
+// agentLoop: Per-session AgentLoop (caller should create one per voice connection)
+// connectionID: Unique identifier for this voice connection (used as session key prefix)
 func (b *PipelineBuilder) Build(
 	ctx context.Context,
-	agentInstance *agent.AgentInstance,
+	agentLoop *agent.AgentLoop,
+	connectionID string,
 	outputTransport voicechain.Transport,
 ) ([]voicechain.HandleFunc, error) {
 
@@ -94,19 +97,19 @@ func (b *PipelineBuilder) Build(
 		VADOption: b.vad.Option,
 	})
 
-	// 5. 构建 AgentPipeline
+	// 5. 构建 AgentPipeline (使用 AgentLoop)
+	sessionKey := "voice:" + connectionID
 	agentHandler := pipeline.NewAgentPipeline(pipeline.AgentPipelineOptions{
-		AgentInstance: agentInstance,
-		TTSSession:    ttsSession,
-		StreamPlayer:  player,
-		SpeechConfig:  speechConfig,
+		AgentLoop:    agentLoop,
+		SessionKey:   sessionKey,
+		TTSSession:   ttsSession,
+		StreamPlayer: player,
+		SpeechConfig: speechConfig,
 	})
 
-	// 6. 构建 ConversationPipeline
-	conversationHandler := pipeline.NewConversationPipeline().HandleFunc()
-
 	slog.Debug("pipeline built",
-		"agentID", agentInstance.ID,
+		"connectionID", connectionID,
+		"sessionKey", sessionKey,
 		"asrProvider", b.asr.Name,
 		"ttsProvider", b.tts.Name,
 		"vadType", b.vad.Type)
@@ -114,7 +117,6 @@ func (b *PipelineBuilder) Build(
 	return []voicechain.HandleFunc{
 		audioProcessHandler,
 		agentHandler,
-		conversationHandler,
 	}, nil
 }
 

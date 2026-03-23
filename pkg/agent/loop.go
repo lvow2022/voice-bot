@@ -536,6 +536,260 @@ func (al *AgentLoop) ProcessHeartbeat(
 	})
 }
 
+// StreamCallbacks handles streaming response chunks for voice pipeline
+type StreamCallbacks struct {
+	OnChunk func(chunk string) // Called for each text chunk
+}
+
+// ProcessDirectStream processes a message with streaming response.
+// If the provider supports streaming (implements StreamCapable), it streams chunks via callbacks.
+// Otherwise, it falls back to non-streaming and calls OnChunk once with the full response.
+func (al *AgentLoop) ProcessDirectStream(
+	ctx context.Context,
+	content, sessionKey, channel, chatID string,
+	callbacks StreamCallbacks,
+) (string, error) {
+	if err := al.ensureMCPInitialized(ctx); err != nil {
+		return "", err
+	}
+
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		return "", fmt.Errorf("no default agent available")
+	}
+
+	// Check if provider supports streaming
+	streamCapable, ok := agent.Provider.(providers.StreamCapable)
+	if !ok {
+		// Fallback to non-streaming
+		response, err := al.ProcessDirectWithChannel(ctx, content, sessionKey, channel, chatID)
+		if err != nil {
+			return "", err
+		}
+		if callbacks.OnChunk != nil {
+			callbacks.OnChunk(response)
+		}
+		return response, nil
+	}
+
+	// Use streaming path
+	opts := processOptions{
+		SessionKey:      sessionKey,
+		Channel:         channel,
+		ChatID:          chatID,
+		UserMessage:     content,
+		DefaultResponse: defaultResponse,
+		EnableSummary:   true,
+		SendResponse:    false,
+	}
+
+	return al.runAgentLoopStream(ctx, agent, opts, streamCapable, callbacks)
+}
+
+// runAgentLoopStream is the streaming variant of runAgentLoop
+func (al *AgentLoop) runAgentLoopStream(
+	ctx context.Context,
+	agent *AgentInstance,
+	opts processOptions,
+	streamCapable providers.StreamCapable,
+	callbacks StreamCallbacks,
+) (string, error) {
+	// 1. Build messages
+	var history []providers.Message
+	var summary string
+	if !opts.NoHistory {
+		history = agent.Sessions.GetHistory(opts.SessionKey)
+		summary = agent.Sessions.GetSummary(opts.SessionKey)
+	}
+	messages := agent.ContextBuilder.BuildMessages(
+		history,
+		summary,
+		opts.UserMessage,
+		opts.Media,
+		opts.Channel,
+		opts.ChatID,
+	)
+
+	// 2. Save user message to session
+	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
+
+	// 3. Run streaming LLM iteration loop
+	finalContent, _, err := al.runLLMIterationStream(ctx, agent, messages, opts, streamCapable, callbacks)
+	if err != nil {
+		return "", err
+	}
+
+	// 4. Handle empty response
+	if finalContent == "" {
+		finalContent = opts.DefaultResponse
+	}
+
+	// 5. Save final assistant message to session
+	agent.Sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
+	agent.Sessions.Save(opts.SessionKey)
+
+	// 6. Optional: summarization
+	if opts.EnableSummary {
+		al.maybeSummarize(agent, opts.SessionKey, opts.Channel, opts.ChatID)
+	}
+
+	return finalContent, nil
+}
+
+// runLLMIterationStream executes the LLM call loop with streaming
+func (al *AgentLoop) runLLMIterationStream(
+	ctx context.Context,
+	agent *AgentInstance,
+	messages []providers.Message,
+	opts processOptions,
+	streamCapable providers.StreamCapable,
+	callbacks StreamCallbacks,
+) (string, int, error) {
+	iteration := 0
+	var finalContent string
+
+	activeCandidates, activeModel := al.selectCandidates(agent, opts.UserMessage, messages)
+
+	for iteration < agent.MaxIterations {
+		iteration++
+
+		logger.DebugCF("agent", "LLM iteration (streaming)",
+			map[string]any{
+				"agent_id":  agent.ID,
+				"iteration": iteration,
+				"max":       agent.MaxIterations,
+			})
+
+		providerToolDefs := agent.Tools.ToProviderDefs()
+
+		llmOpts := map[string]any{
+			"max_tokens":       agent.MaxTokens,
+			"temperature":      agent.Temperature,
+			"prompt_cache_key": agent.ID,
+		}
+
+		// Build streaming callbacks adapter
+		streamCallbacks := providers.StreamCallbacks{
+			OnChunk: func(chunk providers.StreamChunk) {
+				if callbacks.OnChunk != nil && chunk.Content != "" {
+					callbacks.OnChunk(chunk.Content)
+				}
+			},
+		}
+
+		// Call LLM with streaming
+		var response *providers.LLMResponse
+		var err error
+
+		al.activeRequests.Add(1)
+		func() {
+			defer al.activeRequests.Done()
+
+			if len(activeCandidates) > 1 && al.fallback != nil {
+				// For fallback with streaming, use first candidate only
+				// (streaming fallback is complex and not commonly needed)
+				response, err = streamCapable.ChatStream(
+					ctx, messages, providerToolDefs, activeModel, llmOpts, streamCallbacks,
+				)
+			} else {
+				response, err = streamCapable.ChatStream(
+					ctx, messages, providerToolDefs, activeModel, llmOpts, streamCallbacks,
+				)
+			}
+		}()
+
+		if err != nil {
+			logger.ErrorCF("agent", "LLM streaming call failed",
+				map[string]any{
+					"agent_id":  agent.ID,
+					"iteration": iteration,
+					"model":     activeModel,
+					"error":     err.Error(),
+				})
+			return "", iteration, fmt.Errorf("LLM streaming call failed: %w", err)
+		}
+
+		logger.DebugCF("agent", "LLM streaming response",
+			map[string]any{
+				"agent_id":      agent.ID,
+				"iteration":     iteration,
+				"content_chars": len(response.Content),
+				"tool_calls":    len(response.ToolCalls),
+			})
+
+		// Check if no tool calls
+		if len(response.ToolCalls) == 0 {
+			finalContent = response.Content
+			break
+		}
+
+		// Handle tool calls (same as non-streaming)
+		normalizedToolCalls := make([]providers.ToolCall, 0, len(response.ToolCalls))
+		for _, tc := range response.ToolCalls {
+			normalizedToolCalls = append(normalizedToolCalls, providers.NormalizeToolCall(tc))
+		}
+
+		// Build assistant message with tool calls
+		assistantMsg := providers.Message{
+			Role:    "assistant",
+			Content: response.Content,
+		}
+		for _, tc := range normalizedToolCalls {
+			argumentsJSON, _ := json.Marshal(tc.Arguments)
+			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, providers.ToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Name: tc.Name,
+				Function: &providers.FunctionCall{
+					Name:      tc.Name,
+					Arguments: string(argumentsJSON),
+				},
+			})
+		}
+		messages = append(messages, assistantMsg)
+		agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
+
+		// Execute tool calls in parallel
+		type indexedResult struct {
+			result *tools.ToolResult
+			tc     providers.ToolCall
+		}
+		results := make([]indexedResult, len(normalizedToolCalls))
+		var wg sync.WaitGroup
+
+		for i, tc := range normalizedToolCalls {
+			results[i].tc = tc
+			wg.Add(1)
+			go func(idx int, tc providers.ToolCall) {
+				defer wg.Done()
+				results[idx].result = agent.Tools.ExecuteWithContext(
+					ctx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID, nil,
+				)
+			}(i, tc)
+		}
+		wg.Wait()
+
+		// Process results
+		for _, r := range results {
+			contentForLLM := r.result.ForLLM
+			if contentForLLM == "" && r.result.Err != nil {
+				contentForLLM = r.result.Err.Error()
+			}
+			toolResultMsg := providers.Message{
+				Role:       "tool",
+				Content:    contentForLLM,
+				ToolCallID: r.tc.ID,
+			}
+			messages = append(messages, toolResultMsg)
+			agent.Sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
+		}
+
+		agent.Tools.TickTTL()
+	}
+
+	return finalContent, iteration, nil
+}
+
 func (al *AgentLoop) processMessage(ctx context.Context, msg InboundMessage) (string, error) {
 	// Add message preview to log (show full content for error messages)
 	var logContent string

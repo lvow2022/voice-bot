@@ -44,6 +44,32 @@ type ThinkingCapable interface {
 	SupportsThinking() bool
 }
 
+// StreamChunk represents a chunk of streaming response.
+type StreamChunk struct {
+	Content   string     // Text content delta
+	Done      bool       // True if stream is complete
+	ToolCalls []ToolCall // Tool calls detected mid-stream (may be empty)
+}
+
+// StreamCallbacks handles streaming response chunks.
+type StreamCallbacks struct {
+	OnChunk func(chunk StreamChunk) // Called for each chunk
+}
+
+// StreamCapable is an optional interface for providers that support streaming.
+type StreamCapable interface {
+	// ChatStream sends a streaming chat request, calling callbacks.OnChunk for each chunk.
+	// Returns the full accumulated response and any error.
+	ChatStream(
+		ctx context.Context,
+		messages []Message,
+		tools []ToolDefinition,
+		model string,
+		options map[string]any,
+		callbacks StreamCallbacks,
+	) (*LLMResponse, error)
+}
+
 // FailoverReason classifies why an LLM request failed for fallback decisions.
 type FailoverReason string
 

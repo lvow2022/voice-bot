@@ -9,27 +9,33 @@ import (
 	"github.com/gorilla/websocket"
 
 	"voicebot/pkg/agent"
+	"voicebot/pkg/config"
+	"voicebot/pkg/providers"
 	"voicebot/pkg/voicechain"
 )
 
 // Server WebSocket 服务
 type Server struct {
-	config      *ServerConfig
-	registry    *agent.AgentRegistry
-	sessionMgr  *SessionManager
-	upgrader    websocket.Upgrader
-	httpServer  *http.Server
+	serverConfig *ServerConfig
+	appConfig    *config.Config
+	provider     providers.LLMProvider
+	registry     *agent.AgentRegistry
+	sessionMgr   *SessionManager
+	upgrader     websocket.Upgrader
+	httpServer   *http.Server
 }
 
 // New 创建 WebSocket 服务
-func New(registry *agent.AgentRegistry, config *ServerConfig) *Server {
+func New(registry *agent.AgentRegistry, appConfig *config.Config, provider providers.LLMProvider, config *ServerConfig) *Server {
 	if config == nil {
 		config = DefaultServerConfig()
 	}
 	return &Server{
-		config:      config,
-		registry:    registry,
-		sessionMgr:  NewSessionManager(config.TokenTTL),
+		serverConfig: config,
+		appConfig:    appConfig,
+		provider:     provider,
+		registry:     registry,
+		sessionMgr:   NewSessionManager(config.TokenTTL),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -48,11 +54,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/health", s.handleHealth)
 
 	s.httpServer = &http.Server{
-		Addr:    s.config.Addr,
+		Addr:    s.serverConfig.Addr,
 		Handler: mux,
 	}
 
-	slog.Info("websocket server starting", "addr", s.config.Addr)
+	slog.Info("websocket server starting", "addr", s.serverConfig.Addr)
 	return s.httpServer.ListenAndServe()
 }
 
@@ -146,13 +152,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 获取 agent
-	agentInstance, ok := s.registry.GetAgent(ps.AgentID)
+	// 获取 agent (for logging purposes)
+	_, ok := s.registry.GetAgent(ps.AgentID)
 	if !ok {
 		slog.Error("agent not found after token validation", "agentID", ps.AgentID)
 		conn.Close()
 		return
 	}
+
+	// 创建 per-session AgentLoop
+	agentLoop := agent.NewAgentLoop(s.appConfig, s.provider)
 
 	// 创建 transport
 	transport := NewWSTransport(conn, ps.ASR.SampleRate)
@@ -165,8 +174,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Output(transport)
 
 	// 构建 pipeline
+	connectionID := session.ID
 	builder := NewPipelineBuilder(&ps.LLM, &ps.ASR, &ps.TTS, &ps.VAD)
-	handlers, err := builder.Build(r.Context(), agentInstance, transport)
+	handlers, err := builder.Build(r.Context(), agentLoop, connectionID, transport)
 	if err != nil {
 		slog.Error("failed to build pipeline", "error", err)
 		transport.SendError("pipeline_error", err.Error())

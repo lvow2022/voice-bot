@@ -55,3 +55,28 @@ func (p *HTTPProvider) Chat(
 func (p *HTTPProvider) GetDefaultModel() string {
 	return ""
 }
+
+// ChatStream implements StreamCapable interface
+func (p *HTTPProvider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	callbacks StreamCallbacks,
+) (*LLMResponse, error) {
+	// Adapt callbacks from providers.StreamCallbacks to openai_compat.StreamCallbacks
+	delegateCallbacks := openai_compat.StreamCallbacks{
+		OnChunk: func(chunk openai_compat.StreamChunk) {
+			if callbacks.OnChunk != nil {
+				callbacks.OnChunk(StreamChunk{
+					Content:   chunk.Content,
+					Done:      chunk.Done,
+					ToolCalls: chunk.ToolCalls,
+				})
+			}
+		},
+	}
+
+	return p.delegate.ChatStream(ctx, messages, tools, model, options, delegateCallbacks)
+}

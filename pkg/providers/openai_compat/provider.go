@@ -221,6 +221,250 @@ func (p *Provider) Chat(
 	return out, nil
 }
 
+// StreamChunk represents a chunk of streaming response (local type for openai_compat)
+type StreamChunk struct {
+	Content   string
+	Done      bool
+	ToolCalls []ToolCall
+}
+
+// StreamCallbacks handles streaming response chunks (local type for openai_compat)
+type StreamCallbacks struct {
+	OnChunk func(chunk StreamChunk)
+}
+
+// ChatStream sends a streaming chat request, calling callbacks.OnChunk for each chunk.
+// Returns the full accumulated response and any error.
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	callbacks StreamCallbacks,
+) (*LLMResponse, error) {
+	if p.apiBase == "" {
+		return nil, fmt.Errorf("API base not configured")
+	}
+
+	model = normalizeModel(model, p.apiBase)
+
+	requestBody := map[string]any{
+		"model":    model,
+		"messages": serializeMessages(messages),
+		"stream":   true,
+	}
+
+	if len(tools) > 0 {
+		requestBody["tools"] = tools
+		requestBody["tool_choice"] = "auto"
+	}
+
+	if maxTokens, ok := asInt(options["max_tokens"]); ok {
+		fieldName := p.maxTokensField
+		if fieldName == "" {
+			lowerModel := strings.ToLower(model)
+			if strings.Contains(lowerModel, "glm") || strings.Contains(lowerModel, "o1") ||
+				strings.Contains(lowerModel, "gpt-5") {
+				fieldName = "max_completion_tokens"
+			} else {
+				fieldName = "max_tokens"
+			}
+		}
+		requestBody[fieldName] = maxTokens
+	}
+
+	if temperature, ok := asFloat(options["temperature"]); ok {
+		lowerModel := strings.ToLower(model)
+		if strings.Contains(lowerModel, "kimi") && strings.Contains(lowerModel, "k2") {
+			requestBody["temperature"] = 1.0
+		} else {
+			requestBody["temperature"] = temperature
+		}
+	}
+
+	if cacheKey, ok := options["prompt_cache_key"].(string); ok && cacheKey != "" {
+		if supportsPromptCacheKey(p.apiBase) {
+			requestBody["prompt_cache_key"] = cacheKey
+		}
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256))
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read response: %w", readErr)
+		}
+		return nil, fmt.Errorf(
+			"API request failed:\n  Status: %d\n  Body:   %s",
+			resp.StatusCode,
+			responsePreview(body, 128),
+		)
+	}
+
+	return p.parseStreamResponse(resp.Body, callbacks)
+}
+
+// parseStreamResponse parses SSE streaming response
+func (p *Provider) parseStreamResponse(body io.Reader, callbacks StreamCallbacks) (*LLMResponse, error) {
+	var fullContent strings.Builder
+	var reasoningContent strings.Builder
+	var finishReason string
+	var usage *UsageInfo
+
+	// Track tool calls by index, accumulating arguments as strings
+	type toolCallBuilder struct {
+		id        string
+		name      string
+		argsBytes strings.Builder
+	}
+	toolCallBuilders := make(map[int]*toolCallBuilder)
+
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// SSE format: "data: <json>"
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+
+		// Stream end marker
+		if data == "[DONE]" {
+			if callbacks.OnChunk != nil {
+				callbacks.OnChunk(StreamChunk{Done: true})
+			}
+			break
+		}
+
+		// Parse chunk
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+					ToolCalls        []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function *struct {
+							Name      string          `json:"name"`
+							Arguments json.RawMessage `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *UsageInfo `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue // Skip malformed chunks
+		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		choice := chunk.Choices[0]
+
+		// Accumulate content
+		if choice.Delta.Content != "" {
+			fullContent.WriteString(choice.Delta.Content)
+			if callbacks.OnChunk != nil {
+				callbacks.OnChunk(StreamChunk{Content: choice.Delta.Content})
+			}
+		}
+
+		if choice.Delta.ReasoningContent != "" {
+			reasoningContent.WriteString(choice.Delta.ReasoningContent)
+		}
+
+		// Accumulate tool calls (streaming builds them incrementally)
+		for _, tc := range choice.Delta.ToolCalls {
+			builder := toolCallBuilders[tc.Index]
+			if builder == nil {
+				builder = &toolCallBuilder{}
+				toolCallBuilders[tc.Index] = builder
+			}
+
+			if tc.ID != "" {
+				builder.id = tc.ID
+			}
+			if tc.Function != nil {
+				if tc.Function.Name != "" {
+					builder.name = tc.Function.Name
+				}
+				if tc.Function.Arguments != nil {
+					builder.argsBytes.Write(tc.Function.Arguments)
+				}
+			}
+		}
+
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading stream: %w", err)
+	}
+
+	// Build final tool calls from builders
+	toolCalls := make([]ToolCall, 0, len(toolCallBuilders))
+	for idx, builder := range toolCallBuilders {
+		if builder.id == "" && builder.name == "" {
+			continue
+		}
+		args := decodeToolCallArguments(json.RawMessage(builder.argsBytes.String()), builder.name)
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        builder.id,
+			Name:      builder.name,
+			Arguments: args,
+		})
+		_ = idx // suppress unused variable warning
+	}
+
+	return &LLMResponse{
+		Content:          fullContent.String(),
+		ReasoningContent: reasoningContent.String(),
+		ToolCalls:        toolCalls,
+		FinishReason:     finishReason,
+		Usage:            usage,
+	}, nil
+}
+
 func wrapHTMLResponseError(statusCode int, body []byte, contentType, apiBase string) error {
 	respPreview := responsePreview(body, 128)
 	return fmt.Errorf(
